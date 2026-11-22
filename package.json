@@ -1,0 +1,25 @@
+{
+  "name": "ax-design-tool-presentation",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsx scripts/build-site.ts",
+    "build:ui": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "figma-bridge": "tsx scripts/figma-bridge.ts",
+    "test:studio": "tsx scripts/test-studio.ts",
+    "test:conference": "tsx scripts/test-conference.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pngjs": "^6.0.5",
+    "mediabunny": "^1.65.2",
+    "omggif": "^1.0.10",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}
