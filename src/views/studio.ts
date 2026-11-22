@@ -605,6 +605,8 @@ function loadImage(url: string): Promise<HTMLImageElement> {
     image.onerror = finish;
     if (!cached) {
       imageCache.set(url, image);
+      // Graphic-library images come from another origin; CORS keeps the export canvas untainted.
+      image.crossOrigin = "anonymous";
       image.src = url;
     } else if (image.complete) {
       finish();
