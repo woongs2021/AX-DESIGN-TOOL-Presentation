@@ -1,7 +1,9 @@
 import "./shared/tokens.css";
 import "./styles/base.css";
 import type { ConferenceIndex } from "./shared/conference.ts";
+import type { SiteIndex } from "./shared/index-types.ts";
 import { loadUploads } from "./studio-uploads.ts";
+import { syncGraphicLibrary } from "./views/studio.ts";
 import { confirmProceed, showToast } from "./feedback.ts";
 import { hrefFor, onRouteChange } from "./router.ts";
 import { bindPresentation, releasePresentationMenu, renderPresentation } from "./views/presentation.ts";
@@ -19,6 +21,10 @@ import {
 const MODE_KEY = "ax-design-studio-mode";
 /** Conference backgrounds, speakers, and logos the slides are built from. */
 const CONFERENCE_URL = "./data/conference.json";
+/** Graphic library for the editor's ASSETS tab. Without it the tab is not shown. */
+const INDEX_URL = "./data/index.json";
+/** The library images are not in this repo; AX-DESIGN-TOOL's Pages site serves them (with CORS). */
+const LIBRARY_ORIGIN = "https://woongs2021.github.io/AX-DESIGN-TOOL/";
 const HOME = hrefFor({ name: "presentation" });
 
 type Mode = "light" | "dark";
@@ -229,21 +235,41 @@ async function readConference(): Promise<ConferenceIndex | null> {
   }
 }
 
+async function readGraphicLibrary(): Promise<void> {
+  try {
+    const response = await fetch(`${INDEX_URL}?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const text = await response.text();
+    if (text.trimStart().startsWith("<")) return;
+    const index = JSON.parse(text) as SiteIndex;
+    if (!Array.isArray(index?.captures)) return;
+    const remote = (path: string | null) => (path ? LIBRARY_ORIGIN + path : null);
+    syncGraphicLibrary(
+      index.captures.map((capture) => ({
+        ...capture,
+        asset: { ...capture.asset, path: LIBRARY_ORIGIN + capture.asset.path, thumbPath: remote(capture.asset.thumbPath) },
+      })),
+    );
+  } catch {
+    // No library: the ASSETS tab stays hidden.
+  }
+}
+
 async function loadData(): Promise<void> {
   loadState = { status: "loading" };
   render();
-  const uploads = loadUploads();
+  const extras = Promise.all([loadUploads(), readGraphicLibrary()]);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const conference = await readConference();
     if (conference) {
-      await uploads;
+      await extras;
       loadState = { status: "ready", conference };
       render();
       return;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 400));
   }
-  await uploads;
+  await extras;
   loadState = { status: "error", message: `${CONFERENCE_URL} could not be read.` };
   render();
 }
