@@ -52,3 +52,27 @@ npm run preview
 npm run test:studio
 npm run test:conference
 ```
+
+## 배포
+
+GitHub Pages가 `gh-pages` 브랜치의 루트를 서비스한다. 자동 배포는 없다. 커밋한 상태에서 저장소 루트에서 아래를 실행해 `dist/app`을 `gh-pages`에 올린다. 작업 중인 브랜치와 파일은 바뀌지 않는다.
+
+```bash
+npm run build
+touch dist/app/.nojekyll
+git fetch origin gh-pages
+export GIT_INDEX_FILE="$PWD/.git/gh-pages.index"
+rm -f "$GIT_INDEX_FILE"
+git --work-tree=dist/app add -A
+commit=$(git commit-tree "$(git write-tree)" -p origin/gh-pages -m "Deploy the Presentation site to GitHub Pages.")
+rm -f "$GIT_INDEX_FILE"
+unset GIT_INDEX_FILE
+git push origin "$commit:gh-pages"
+```
+
+푸시하면 Pages가 1분 안팎으로 다시 빌드한다. 몇 분이 지나도 사이트가 바뀌지 않으면 빌드를 직접 요청한다.
+
+```bash
+gh api -X POST repos/woongs2021/AX-DESIGN-TOOL-Presentation/pages/builds
+gh api repos/woongs2021/AX-DESIGN-TOOL-Presentation/pages/builds/latest -q .status   # built가 나오면 끝
+```
