@@ -1,5 +1,5 @@
 /**
- * Local page folders: presentation/project 1/pages/page N.
+ * Local page folders: presentation/<project dir>/pages/page N, one set per project.
  * The dev server creates, deletes, and serves them. A production build has no route.
  */
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -9,8 +9,8 @@ import type { Plugin } from "vite";
 import { backgroundIdFor, logoSlug, speakerSlug } from "../src/shared/conference.ts";
 import { GIT_MAX_FILE_BYTES } from "../src/shared/limits.ts";
 import { PRESENTATION_MEDIA_PREFIX, PRESENTATION_PROJECT_ROUTE, PRESENTATION_UPLOAD_ROUTE } from "../src/shared/presentation-files.ts";
+import { isProjectDir, isProjectId, PROJECT_FILE, PROJECT_PAGES_DIR, PROJECTS_DIR } from "../src/shared/projects.ts";
 
-const PROJECT = join("presentation", "project 1", "pages");
 const META = "page.json";
 const IMAGE = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif"]);
 const VIDEO = new Set([".mp4", ".webm", ".mov"]);
@@ -18,18 +18,44 @@ const SOURCE = "phase 2-resources";
 
 type Meta = { id: string; placed: string[] };
 type Folder = { dir: string; meta: Meta };
-type SyncPage = { id: string; copy?: string[] };
+export type SyncPage = { id: string; copy?: string[] };
 type ListedFile = { name: string; kind: "image" | "video"; placed: boolean };
 
-function pagesRoot(): string {
-  return resolve(PROJECT);
+export function projectsRoot(): string {
+  return resolve(PROJECTS_DIR);
+}
+
+/** Project folders under presentation/, by project id. Only `project N` folders with a readable project.json count. */
+export function projectDirs(): Map<string, string> {
+  const root = projectsRoot();
+  const found = new Map<string, string>();
+  if (!existsSync(root)) return found;
+  for (const name of readdirSync(root)) {
+    if (!isProjectDir(name)) continue;
+    const dir = join(root, name);
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+      const id = (JSON.parse(readFileSync(join(dir, PROJECT_FILE), "utf8")) as { id?: unknown }).id;
+      if (isProjectId(id) && !found.has(id)) found.set(id, dir);
+    } catch {
+      /* A folder without a readable project.json is not a project. */
+    }
+  }
+  return found;
+}
+
+/** presentation/<dir>/pages for a project id. Null when there is no such project. */
+function pagesRoot(projectId: unknown): string | null {
+  if (!isProjectId(projectId)) return null;
+  const dir = projectDirs().get(projectId);
+  return dir ? join(dir, PROJECT_PAGES_DIR) : null;
 }
 
 function safeId(id: string): boolean {
   return /^[\w-]+$/.test(id);
 }
 
-function inside(parent: string, child: string): boolean {
+export function inside(parent: string, child: string): boolean {
   const root = resolve(parent);
   const target = resolve(child);
   return target === root || target.startsWith(`${root}${sep}`);
@@ -131,8 +157,7 @@ function copyAsset(dir: string, key: string): string | null {
   return name;
 }
 
-function readFolders(): Map<string, Folder> {
-  const root = pagesRoot();
+function readFolders(root: string): Map<string, Folder> {
   const found = new Map<string, Folder>();
   if (!existsSync(root)) return found;
   for (const name of readdirSync(root)) {
@@ -157,11 +182,11 @@ function listFiles(folder: Folder): ListedFile[] {
   return files.sort((a, b) => a.name.localeCompare(b.name, "en"));
 }
 
-function syncFolders(pages: SyncPage[]): { id: string; files: ListedFile[] }[] {
-  const root = pagesRoot();
+/** Makes `root` (a project's pages/) hold one folder per page, named page 1, page 2, … in deck order. */
+export function syncFolders(root: string, pages: SyncPage[]): { id: string; files: ListedFile[] }[] {
   mkdirSync(root, { recursive: true });
   const wanted = pages.filter((page) => safeId(page.id));
-  const folders = readFolders();
+  const folders = readFolders(root);
   for (const [id, folder] of folders) {
     if (wanted.some((page) => page.id === id) || !inside(root, folder.dir)) continue;
     rmSync(folder.dir, { recursive: true, force: true });
@@ -197,8 +222,8 @@ function syncFolders(pages: SyncPage[]): { id: string; files: ListedFile[] }[] {
   });
 }
 
-function markPlaced(pages: { id: string; names: string[] }[]): void {
-  const folders = readFolders();
+function markPlaced(root: string, pages: { id: string; names: string[] }[]): void {
+  const folders = readFolders(root);
   for (const page of pages) {
     const folder = folders.get(page.id);
     if (!folder) continue;
@@ -212,9 +237,9 @@ function markPlaced(pages: { id: string; names: string[] }[]): void {
   }
 }
 
-function fileFor(pageId: string, name: string): string | null {
+function fileFor(root: string, pageId: string, name: string): string | null {
   if (!safeId(pageId) || name !== basename(name) || name.startsWith(".") || !kindOf(name)) return null;
-  const folder = readFolders().get(pageId);
+  const folder = readFolders(root).get(pageId);
   if (!folder) return null;
   const file = resolve(folder.dir, name);
   if (!inside(folder.dir, file) || !existsSync(file) || !statSync(file).isFile()) return null;
@@ -281,10 +306,10 @@ function uniqueName(dir: string, name: string): string {
 }
 
 /** Deletes one image or video from the page folder and drops it from placed. */
-function removeFile(pageId: string, rawName: string): { name: string; keys: string[] } | null {
+function removeFile(root: string, pageId: string, rawName: string): { name: string; keys: string[] } | null {
   const name = safeFileName(rawName);
-  const folder = name ? readFolders().get(pageId) : null;
-  if (!name || !folder || !inside(pagesRoot(), folder.dir)) return null;
+  const folder = name ? readFolders(root).get(pageId) : null;
+  if (!name || !folder || !inside(root, folder.dir)) return null;
   const file = join(folder.dir, name);
   if (!existsSync(file) || !statSync(file).isFile()) return null;
   const keys = [...sources().entries()].flatMap(([key, source]) => (basename(source) === name ? [key] : []));
@@ -298,10 +323,10 @@ function removeFile(pageId: string, rawName: string): { name: string; keys: stri
 }
 
 /** Writes one image or video into the page folder and marks it placed. */
-function saveUpload(pageId: string, rawName: string, data: Buffer): { name: string; kind: "image" | "video" } | null {
+function saveUpload(root: string, pageId: string, rawName: string, data: Buffer): { name: string; kind: "image" | "video" } | null {
   const name = safeFileName(rawName);
-  const folder = name && data.length > 0 ? readFolders().get(pageId) : null;
-  if (!name || !folder || !inside(pagesRoot(), folder.dir)) return null;
+  const folder = name && data.length > 0 ? readFolders(root).get(pageId) : null;
+  if (!name || !folder || !inside(root, folder.dir)) return null;
   const stored = uniqueName(folder.dir, name);
   const dest = join(folder.dir, stored);
   if (extname(stored).toLowerCase() === ".svg") writeFileSync(dest, sizedSvg(data.toString("utf8")));
@@ -354,7 +379,6 @@ export function presentationProject(): Plugin {
   return {
     name: "presentation-project",
     configureServer(server) {
-      const root = pagesRoot();
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split("?")[0] ?? "";
         if (url !== PRESENTATION_PROJECT_ROUTE && url !== PRESENTATION_UPLOAD_ROUTE && !url.startsWith(PRESENTATION_MEDIA_PREFIX)) {
@@ -368,7 +392,8 @@ export function presentationProject(): Plugin {
         }
         if (url.startsWith(PRESENTATION_MEDIA_PREFIX)) {
           const parts = url.slice(PRESENTATION_MEDIA_PREFIX.length).split("/").map((part) => decodeURIComponent(part));
-          const file = parts.length === 2 ? fileFor(parts[0] ?? "", parts[1] ?? "") : null;
+          const root = parts.length === 3 ? pagesRoot(parts[0]) : null;
+          const file = root ? fileFor(root, parts[1] ?? "", parts[2] ?? "") : null;
           if (!file) {
             res.statusCode = 404;
             res.end();
@@ -385,7 +410,8 @@ export function presentationProject(): Plugin {
           }
           try {
             const query = new URL(req.url ?? "", "http://localhost").searchParams;
-            const saved = saveUpload(query.get("page") ?? "", query.get("name") ?? "", await readBuffer(req, GIT_MAX_FILE_BYTES));
+            const root = pagesRoot(query.get("project"));
+            const saved = root ? saveUpload(root, query.get("page") ?? "", query.get("name") ?? "", await readBuffer(req, GIT_MAX_FILE_BYTES)) : null;
             if (!saved) {
               res.statusCode = 400;
               res.end();
@@ -406,14 +432,21 @@ export function presentationProject(): Plugin {
         }
         try {
           const body = JSON.parse(await readBody(req)) as {
+            project?: unknown;
             pages?: SyncPage[];
             placed?: { id?: unknown; names?: unknown }[];
             remove?: { id?: unknown; name?: unknown };
           };
+          const root = pagesRoot(body.project);
+          if (!root) {
+            res.statusCode = 400;
+            res.end();
+            return;
+          }
           if (body.remove) {
             const id = body.remove.id;
             const name = body.remove.name;
-            const removed = typeof id === "string" && typeof name === "string" ? removeFile(id, name) : null;
+            const removed = typeof id === "string" && typeof name === "string" ? removeFile(root, id, name) : null;
             if (!removed) {
               res.statusCode = 404;
               res.end();
@@ -425,6 +458,7 @@ export function presentationProject(): Plugin {
           }
           if (Array.isArray(body.placed)) {
             markPlaced(
+              root,
               body.placed.flatMap((item) => {
                 if (!item || typeof item.id !== "string" || !Array.isArray(item.names)) return [];
                 return [{ id: item.id, names: item.names.filter((name): name is string => typeof name === "string") }];
@@ -442,18 +476,15 @@ export function presentationProject(): Plugin {
             return [{ id: page.id, copy }];
           });
           res.setHeader("Content-Type", "application/json");
-          res.end(JSON.stringify({ pages: syncFolders(pages) }));
+          res.end(JSON.stringify({ pages: syncFolders(root, pages) }));
         } catch {
           res.statusCode = 400;
           res.end();
         }
       });
-      server.httpServer?.once("listening", () => {
-        mkdirSync(root, { recursive: true });
-      });
     },
     handleHotUpdate({ file }) {
-      if (file.startsWith(pagesRoot())) return [];
+      if (inside(projectsRoot(), file)) return [];
     },
   };
 }

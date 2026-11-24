@@ -1,12 +1,15 @@
 /**
- * Builds the Presentation as a static site in dist/app: the app with public/ (data and assets),
- * then the page-folder files the default deck uses, where presentationFileUrl looks off localhost.
+ * Builds the Presentation as a static site in dist/app: the app with public/ (data and assets) and every
+ * project's project.json, deck.json, and thumbnail.webp (bundled by src/built-projects.ts),
+ * then the page-folder files each project's deck uses, where presentationFileUrl looks off localhost.
  */
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { GITHUB_PAGES_MAX_BYTES } from "../src/shared/limits.ts";
 import { PRESENTATION_STATIC_DIR, parsePresentationFile } from "../src/shared/presentation-files.ts";
+import { PROJECT_DECK_FILE, PROJECT_PAGES_DIR } from "../src/shared/projects.ts";
+import { projectDirs } from "./presentation-project.ts";
 
 const APP_DIR = "dist/app";
 
@@ -15,9 +18,9 @@ function run(command: string, args: string[]): void {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-/** Copies the page-folder files the default deck uses next to the app. Returns their bytes. */
-function copyPresentationMedia(appDir: string): number {
-  const root = join("presentation", "project 1", "pages");
+/** Copies the page-folder files a project's deck.json uses next to the app. Returns their bytes. */
+function copyProjectMedia(appDir: string, projectId: string, projectDir: string): number {
+  const root = join(projectDir, PROJECT_PAGES_DIR);
   const folders = new Map<string, string>();
   for (const name of existsSync(root) ? readdirSync(root) : []) {
     const meta = join(root, name, "page.json");
@@ -25,7 +28,7 @@ function copyPresentationMedia(appDir: string): number {
     const id = (JSON.parse(readFileSync(meta, "utf8")) as { id?: unknown }).id;
     if (typeof id === "string") folders.set(id, join(root, name));
   }
-  const deck = JSON.parse(readFileSync(join("src", "shared", "presentation-defaults.json"), "utf8")) as {
+  const deck = JSON.parse(readFileSync(join(projectDir, PROJECT_DECK_FILE), "utf8")) as {
     pages?: { state?: { layers?: { src?: unknown }[]; background?: { file?: unknown } } }[];
   };
   const srcs = new Set<string>();
@@ -40,10 +43,10 @@ function copyPresentationMedia(appDir: string): number {
     const folder = folders.get(file.pageId);
     const from = folder ? join(folder, file.name) : "";
     if (!from || !existsSync(from)) {
-      console.warn(`WARN: ${src} is on a default page but missing from its page folder`);
+      console.warn(`WARN: ${projectId} ${src} is on a default page but missing from its page folder`);
       continue;
     }
-    const to = join(appDir, PRESENTATION_STATIC_DIR, file.pageId, file.name.normalize("NFC"));
+    const to = join(appDir, PRESENTATION_STATIC_DIR, projectId, file.pageId, file.name.normalize("NFC"));
     mkdirSync(dirname(to), { recursive: true });
     copyFileSync(from, to);
     bytes += statSync(to).size;
@@ -64,8 +67,13 @@ function folderBytes(dir: string): number {
 console.log("\n==> Building the app (public/ data and assets included)");
 run("npm", ["run", "build:ui"]);
 
-console.log("\n==> Copying presentation page files the default deck uses");
-const mediaBytes = copyPresentationMedia(APP_DIR);
+console.log("\n==> Copying the page files each project's deck uses");
+let mediaBytes = 0;
+for (const [id, dir] of projectDirs()) {
+  const bytes = copyProjectMedia(APP_DIR, id, dir);
+  console.log(`${id} (${dir.split(/[\\/]/).pop()}): ${bytes} bytes`);
+  mediaBytes += bytes;
+}
 
 const bundleBytes = folderBytes(APP_DIR);
 console.log(`\npresentation media bytes: ${mediaBytes}`);

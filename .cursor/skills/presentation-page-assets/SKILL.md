@@ -4,12 +4,12 @@ description: >-
   Organizes AX Presentation images and videos into each page folder and keeps
   the control panel tied to that folder. Use when the user asks to organize
   images in bulk (일괄 이미지 정리), sort assets by page, or put pictures and
-  videos into presentation/project 1/pages.
+  videos into presentation/<project dir>/pages.
 ---
 
 # Presentation page assets
 
-Each presentation page has one folder. The control panel for the open page lists that folder only. Speecher and SVG stay available for layers that already point at `conf:` sources. They are not the page library.
+Each presentation project is `presentation/project N/` (`project.json`, `deck.json`, `pages/`), and each of its pages has one folder. The control panel for the open page lists that folder only. Speecher and SVG stay available for layers that already point at `conf:` sources. They are not the page library. Work on one project: the one the user names, or the one open at `#/presentation/<projectId>`; ask if it is unclear.
 
 ```
 presentation/project 1/pages/page 1/
@@ -23,10 +23,10 @@ presentation/project 1/pages/page 1/
 
 When the user asks to organize images in bulk, sort by page folder:
 
-1. Read the live deck in `localStorage['ax-presentation-deck']` on localhost. Do not bump `DECK_VERSION`. Do not click 모드 전환, 초기화, or 원.
+1. Read the project's live deck in `localStorage['ax-project-deck:<projectId>']` on localhost (its `deck.json` when the browser has none). Do not bump `DECK_VERSION`. Do not click 모드 전환, 초기화, or 원.
 2. For each page, list image layers and the background. Copy each file that page uses into that page's folder. Match `conf:` ids to `phase 2-resources` (`[Speecher]`, `[SVG]`, `[Graphic_Resources] 2`). A file used on two pages is copied into both folders.
 3. Add those filenames to that folder's `placed` array so a reload does not lay them out a second time. A file that is not on the page yet stays out of `placed`. The editor then inserts it like a type 3 frame.
-4. Leave existing layer `src` values as they are unless the user asked to retarget them. `pres:<pageId>/<file>` is the folder source. The dev server serves it on localhost, and `npm run build:site` copies the files the default deck uses into `presentation-media/` for the Pages site.
+4. Leave existing layer `src` values as they are unless the user asked to retarget them. `pres:<pageId>/<file>` is the folder source inside its project. The dev server serves it on localhost (`/__presentation-media/<projectId>/<pageId>/<file>`), and `npm run build` copies the files each project's `deck.json` uses into `presentation-media/<projectId>/` for the Pages site.
 5. Do not put page media back into the fixed Speecher or SVG control lists. Do not commit `image-pick/` or `dist/`. The `presentation/` folders are part of the repo.
 
 Images: png, jpg, jpeg, webp, gif, svg, avif. Videos: mp4, webm, mov. Skip `page.json` and dotfiles.

@@ -36,6 +36,17 @@ import {
   type PresentationType,
 } from "../shared/presentation.ts";
 
+/** The open project, as the deck view needs it. */
+export type DeckProject = {
+  id: string;
+  /** Project whose page folders hold the deck's pres: files. */
+  media: string;
+  /** Page on the project card, when one is chosen. */
+  thumbnailPageId: string | null;
+  /** Sets the card's page, or clears it (null) so page 1 shows. */
+  onThumbnailPage: (pageId: string | null) => void;
+};
+
 const TYPE_LABEL: Record<PresentationType, string> = { 1: "유형 1", 2: "유형 2", 3: "유형 3" };
 const RAIL_KEY = "ax-presentation-rail";
 const RAIL_OPEN_KEY = "ax-presentation-rail-open";
@@ -285,15 +296,15 @@ function bindSampleHeight(root: HTMLElement): void {
   });
 }
 
-export function presentationStudioConfig(index: ConferenceIndex, historyKey: string, pageId = ""): StudioConfig {
+export function presentationStudioConfig(index: ConferenceIndex, historyKey: string, pageId = "", project = ""): StudioConfig {
   const base = conferenceStudioConfig(index);
   const slide = base.presets.find((item) => item.id === "conf-slide") ?? base.presets[0];
   return {
     id: "presentation",
     historyKey,
     ...(pageId ? { pageId } : {}),
+    ...(project ? { project } : {}),
     presets: slide ? [slide] : base.presets,
-    presetThumbs: base.presetThumbs,
     groups: [
       ...base.groups.map((group) => ({ ...group, hidden: true })),
       { id: "page", label: "이 페이지", items: [] },
@@ -302,7 +313,12 @@ export function presentationStudioConfig(index: ConferenceIndex, historyKey: str
   };
 }
 
-export function renderPresentation(deck: PresentationDeck, index: ConferenceIndex): string {
+/** Undo stacks are per page; page ids repeat across copied projects. */
+function historyKey(project: DeckProject, pageId: string): string {
+  return `presentation:${project.id}:${pageId}`;
+}
+
+export function renderPresentation(deck: PresentationDeck, index: ConferenceIndex, project: DeckProject): string {
   const page = deck.pages[deck.selected] ?? deck.pages[0];
   if (!page) return "";
   const tone = appTone();
@@ -336,19 +352,23 @@ export function renderPresentation(deck: PresentationDeck, index: ConferenceInde
           ? `<img alt="" src="${item.thumb}">`
           : `<span class="deck__thumb-title">${title}</span>`;
       const label = pageName(item, at);
+      const cover = item.id === project.thumbnailPageId;
+      const badge = cover
+        ? `<span class="deck__badge" title="프로젝트 썸네일"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 5h13a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"/><path d="m3.5 16 5-5 4 4 3-3 5 5"/></svg></span>`
+        : "";
       const meta = renameAt === at
         ? `<input class="deck__name" data-deck-name="${at}" value="${escapeHtml(label)}" aria-label="페이지 이름" />`
         : `<span class="deck__meta" data-deck-name="${at}">${escapeHtml(label)}</span>`;
       return `
         <div class="deck__page${picked ? " deck__page--picked" : ""}">
-          <button type="button" class="deck__open" data-deck-page="${at}"${current ? ' aria-current="true"' : ""} aria-label="${escapeHtml(label)} ${title}${picked ? " (선택됨)" : ""}">
-            <span class="deck__thumb" style="background:${escapeHtml(item.state.color)}">${thumb}</span>
+          <button type="button" class="deck__open" data-deck-page="${at}"${current ? ' aria-current="true"' : ""} aria-label="${escapeHtml(label)} ${title}${picked ? " (선택됨)" : ""}${cover ? " (프로젝트 썸네일)" : ""}">
+            <span class="deck__thumb" style="background:${escapeHtml(item.state.color)}">${thumb}</span>${badge}
           </button>
           ${meta}
         </div>`;
     })
     .join("");
-  const config = presentationStudioConfig(index, `presentation:${page.id}`, page.id);
+  const config = presentationStudioConfig(index, historyKey(project, page.id), page.id, project.media);
   const rail = readRailWidth();
   const railOpen = readRailOpen();
   const railToggle = `<button type="button" class="deck__rail-toggle" id="deck-rail-toggle" aria-expanded="${railOpen ? "true" : "false"}" aria-controls="deck-rail" aria-label="${railOpen ? "페이지 프리뷰 접기" : "페이지 프리뷰 펼치기"}" title="${railOpen ? "페이지 프리뷰 접기" : "페이지 프리뷰 펼치기"}"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6 8.5 12l6 6"/></svg></button>`;
@@ -612,6 +632,7 @@ export function bindPresentation(
   root: HTMLElement,
   deck: PresentationDeck,
   index: ConferenceIndex,
+  project: DeckProject,
   actions: Parameters<typeof bindStudio>[3],
   onChange: () => void,
 ): void {
@@ -624,6 +645,12 @@ export function bindPresentation(
   stopDeckKeys?.();
   stopDeckKeys = null;
   if (historyDeck !== deck) {
+    // Another project opened. Its pages read files from its own folders, so copied pages do not carry over.
+    if (historyDeck && pageClip?.kind === "pages") pageClip = null;
+    if (historyDeck) {
+      railScroll = { top: 0, left: 0 };
+      renameAt = null;
+    }
     historyDeck = deck;
     deckUndo.length = 0;
     deckRedo.length = 0;
@@ -638,7 +665,7 @@ export function bindPresentation(
   const page = deck.pages[deck.selected];
   if (!page) return;
   const deckRoot = root.querySelector<HTMLElement>(".deck");
-  const config = presentationStudioConfig(index, `presentation:${page.id}`, page.id);
+  const config = presentationStudioConfig(index, historyKey(project, page.id), page.id, project.media);
   const remember = () => {
     const canvas = document.querySelector<HTMLCanvasElement>("#studio-canvas");
     if (!canvas || canvas.width !== page.state.cardWidth || canvas.height !== page.state.cardHeight) return;
@@ -770,7 +797,7 @@ export function bindPresentation(
   });
   root.querySelector<HTMLButtonElement>("#studio-deck-export")?.addEventListener("click", () => {
     remember();
-    openDeckExport(deck, index);
+    openDeckExport(deck, index, project);
   });
   root.querySelector<HTMLButtonElement>("#studio-present")?.addEventListener("click", () => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -778,13 +805,13 @@ export function bindPresentation(
   });
   if (presenting) showPresent(false);
   startThumbMirror();
-  paintMissingThumbs(root, deck, index);
+  paintMissingThumbs(root, deck, index, project);
   paintTypeThumbs(root, index);
   bindRailScroll(root);
   bindPageClip(deckRoot, deck, index, remember, onChange);
-  bindPageMenu(deckRoot, deck, index, remember, onChange);
+  bindPageMenu(deckRoot, deck, index, project, remember, onChange);
   bindDeckKeys(deckRoot, deck, remember, onChange);
-  syncPresentationProject(deck, onChange);
+  syncPresentationProject(project.id, deck, onChange);
   const onPageKeys = (event: KeyboardEvent) => {
     if (!deckRoot?.isConnected) {
       stopPageKeys?.();
@@ -1162,6 +1189,7 @@ function bindPageMenu(
   deckRoot: HTMLElement | null,
   deck: PresentationDeck,
   index: ConferenceIndex,
+  project: DeckProject,
   remember: () => void,
   onChange: () => void,
 ): void {
@@ -1172,6 +1200,7 @@ function bindPageMenu(
     { action: "cut", label: "잘라내기", hint: shortcut("X") },
     { action: "paste", label: "붙여넣기", hint: shortcut("V") },
     { action: "delete", label: "삭제", hint: IS_MAC ? "⌫" : "Delete" },
+    { action: "thumbnail", label: "썸네일로 지정", hint: "" },
   ];
   const menu = document.createElement("div");
   menu.className = "nav-popover studio-menu deck-page-menu";
@@ -1186,6 +1215,9 @@ function bindPageMenu(
     .join("");
   document.body.append(menu);
   let anchor: PageMenuAnchor | null = null;
+  /** Page list offset when the menu opened. Re-rendering restores it and the editor re-centres its stage; neither is the user scrolling. */
+  let shownScroll = { top: 0, left: 0 };
+  const pageList = () => deckRoot.querySelector<HTMLElement>(".deck__pages");
   const itemButton = (action: string) => menu.querySelector<HTMLButtonElement>(`[data-page-action="${action}"]`);
   const visibleButtons = () => [...menu.querySelectorAll<HTMLButtonElement>("[data-page-action]")].filter((button) => !button.hidden && !button.disabled);
   const close = () => {
@@ -1213,6 +1245,10 @@ function bindPageMenu(
     enable("cut", canRemove, pageAnchor != null);
     enable("paste", pageClip != null, true);
     enable("delete", canRemove, pageAnchor != null);
+    enable("thumbnail", pageAnchor != null, pageAnchor != null);
+    const cover = itemButton("thumbnail");
+    const anchorPage = pageAnchor ? deck.pages[pageAnchor.at] : undefined;
+    if (cover?.firstChild) cover.firstChild.textContent = anchorPage && anchorPage.id === project.thumbnailPageId ? "썸네일 지정 해제" : "썸네일로 지정";
     menu.hidden = false;
     const margin = 8;
     const { width, height } = menu.getBoundingClientRect();
@@ -1220,8 +1256,15 @@ function bindPageMenu(
     const top = request.y + height + margin > window.innerHeight ? request.y - height : request.y;
     menu.style.left = `${Math.max(margin, left)}px`;
     menu.style.top = `${Math.max(margin, top)}px`;
+    shownScroll = { top: pageList()?.scrollTop ?? 0, left: pageList()?.scrollLeft ?? 0 };
     document.addEventListener("pointerdown", onOutside, true);
     visibleButtons()[0]?.focus({ preventScroll: true });
+  };
+  const onScroll = (event: Event) => {
+    if (!(event.target instanceof Element) || !event.target.closest(".deck__rail")) return;
+    const list = pageList();
+    if (event.target === list && list.scrollTop === shownScroll.top && list.scrollLeft === shownScroll.left) return;
+    close();
   };
   const open = (request: PageMenuRequest) => {
     if (request.anchor.kind === "page") {
@@ -1311,6 +1354,12 @@ function bindPageMenu(
     } else if (action === "cut" && target.kind === "page") cutPageAt(deck, target.at, remember, onChange);
     else if (action === "paste") pastePageClip(deck, index, remember, onChange);
     else if (action === "delete" && target.kind === "page") deletePageAt(deck, target.at, remember, onChange);
+    else if (action === "thumbnail" && target.kind === "page") {
+      const page = deck.pages[target.at];
+      if (!page) return;
+      remember();
+      project.onThumbnailPage(page.id === project.thumbnailPageId ? null : page.id);
+    }
   };
   menu.addEventListener("click", onMenuClick);
   menu.addEventListener("keydown", onMenuKey);
@@ -1318,7 +1367,7 @@ function bindPageMenu(
   deckRoot.addEventListener("pointermove", onPointerMove);
   deckRoot.addEventListener("pointerup", onPointerEnd);
   deckRoot.addEventListener("pointercancel", onPointerEnd);
-  deckRoot.addEventListener("scroll", close, true);
+  deckRoot.addEventListener("scroll", onScroll, true);
   document.addEventListener("contextmenu", onContext, true);
   stopPageMenu = () => {
     close();
@@ -1328,7 +1377,7 @@ function bindPageMenu(
     deckRoot.removeEventListener("pointermove", onPointerMove);
     deckRoot.removeEventListener("pointerup", onPointerEnd);
     deckRoot.removeEventListener("pointercancel", onPointerEnd);
-    deckRoot.removeEventListener("scroll", close, true);
+    deckRoot.removeEventListener("scroll", onScroll, true);
     document.removeEventListener("contextmenu", onContext, true);
   };
   if (pendingPageMenu) {
@@ -1462,7 +1511,7 @@ type SavePicker = (options: {
 }>;
 
 /** Renders every page in deck order, builds the chosen file, then asks where to save it. */
-function openDeckExport(deck: PresentationDeck, index: ConferenceIndex): void {
+function openDeckExport(deck: PresentationDeck, index: ConferenceIndex, project: DeckProject): void {
   if (document.querySelector(".deck-export")) return;
   const pages = [...deck.pages];
   const backdrop = document.createElement("div");
@@ -1615,7 +1664,7 @@ function openDeckExport(deck: PresentationDeck, index: ConferenceIndex): void {
         for (let at = 0; at < pages.length; at += 1) {
           const item = pages[at];
           if (!item) continue;
-          scenes.push(await renderStudioScene(item.state, presentationStudioConfig(index, `presentation:${item.id}`)));
+          scenes.push(await renderStudioScene(item.state, presentationStudioConfig(index, historyKey(project, item.id), "", project.media)));
           if (mine !== job) return;
           const spent = performance.now() - started;
           const left = (spent / (at + 1)) * (pages.length - at - 1);
@@ -1687,14 +1736,14 @@ function startThumbMirror(): void {
   requestAnimationFrame(tick);
 }
 
-function paintMissingThumbs(root: HTMLElement, deck: PresentationDeck, index: ConferenceIndex): void {
+function paintMissingThumbs(root: HTMLElement, deck: PresentationDeck, index: ConferenceIndex, project: DeckProject): void {
   const job = ++thumbJob;
   void (async () => {
     for (let at = 0; at < deck.pages.length; at += 1) {
       if (job !== thumbJob) return;
       const item = deck.pages[at];
       if (!item || item.thumb || at === deck.selected) continue;
-      const url = await renderStudioStill(item.state, presentationStudioConfig(index, `presentation:${item.id}`)).catch(() => "");
+      const url = await renderStudioStill(item.state, presentationStudioConfig(index, historyKey(project, item.id), "", project.media)).catch(() => "");
       if (job !== thumbJob || !url || deck.pages[at] !== item || item.thumb) continue;
       item.thumb = url;
       const slot = root.querySelector(`[data-deck-page="${at}"] .deck__thumb`);

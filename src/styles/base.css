@@ -1523,6 +1523,30 @@ html[data-mode="dark"] .spider-callout {
   -webkit-user-drag: none;
 }
 
+/* The page chosen as the project card's thumbnail. */
+.deck__open:has(.deck__badge) {
+  position: relative;
+}
+
+.deck__badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--primary);
+  color: var(--on-primary);
+  pointer-events: none;
+}
+
+.deck__badge .studio__icon {
+  width: 13px;
+  height: 13px;
+}
+
 .deck__page--dragging {
   opacity: 0.35;
 }

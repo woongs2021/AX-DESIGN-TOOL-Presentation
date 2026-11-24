@@ -1,9 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { inflateSync } from "node:zlib";
-import BUILTIN_BASELINES from "../src/shared/studio-defaults.json";
-import CONFERENCE_DEFAULTS from "../src/shared/conference-defaults.json";
-import { hrefFor, isLegacyStudioHash, parseHash } from "../src/router.ts";
 import {
   alignOffsets,
   canGroupLayers,
@@ -28,8 +24,6 @@ import {
   createStudioState,
   DEFAULT_BODY,
   DEFAULT_TITLE,
-  applyStudioBaseline,
-  resetStudioState,
   clampFontSize,
   clampImageOffset,
   clampImageWidth,
@@ -63,30 +57,14 @@ import {
   type ImageLayer,
   type StudioState,
 } from "../src/shared/studio.ts";
-import { applySpeakerOrder, instagramDeck, speakerSlides, speakerSrcOf } from "../src/shared/conference.ts";
 import { cardPdf } from "../src/shared/card-pdf.ts";
 import { GIF_LONG_EDGE, createGifEncoder, gifFrameDelays, gifSize } from "../src/shared/card-gif.ts";
 import { GifReader } from "omggif";
-import { DEFAULT_PRESET_ID, presetById, STUDIO_PRESETS } from "../src/shared/studio-presets.ts";
 import { lineContains, lineFade, lineFadeStops, nodeBounds, parseGradient, parseVectorLayer, penContains, radiusHandlePoints, restartPenAt, resizeShape, scaleShapeBox, shadowOffset, shapeBlend, shapeContains, shapeNodes, shapeStroke, starInner, starPoints, transformNodes, vectorSvg } from "../src/shared/studio-shapes.ts";
 
-assert.equal(STUDIO_PRESETS.length, 8);
-assert.equal(new Set(STUDIO_PRESETS.map((preset) => preset.id)).size, 8);
-assert.equal(DEFAULT_PRESET_ID, "ig-feed-square");
-assert.deepEqual(
-  STUDIO_PRESETS.find((preset) => preset.id === DEFAULT_PRESET_ID),
-  { id: "ig-feed-square", name: "Instagram Feed", width: 1080, height: 1080 },
-);
-assert.equal(presetById("yt-banner").width, 2560);
-assert.equal(presetById("yt-banner").height, 1440);
-assert.equal(presetById("missing").id, DEFAULT_PRESET_ID);
-for (const preset of STUDIO_PRESETS) {
-  const builtin = normalizeStudioState((BUILTIN_BASELINES as Record<string, unknown>)[preset.id]);
-  assert.ok(builtin, `built-in baseline for ${preset.id}`);
-  assert.equal(builtin.presetId, preset.id);
-  assert.deepEqual([builtin.cardWidth, builtin.cardHeight], [preset.width, preset.height]);
-  assert.ok(existsSync(`src/styles/presets/${preset.id}.webp`), `preset thumb ${preset.id}`);
-}
+// A stored card without its own size falls back to 1080 × 1080.
+const unsized = createStudioState("x", "#ffffff");
+assert.deepEqual([unsized.presetId, unsized.cardWidth, unsized.cardHeight], ["ig-feed-square", 1080, 1080]);
 
 assert.equal(clampRadius(28), 28);
 assert.equal(clampRadius(150), 120);
@@ -152,27 +130,6 @@ const titleText = (state: StudioState) => firstLayer(state, "title")?.text;
 const draft = createStudioState("capsule-pattern", "#ffffff");
 assert.equal(titleText(draft), DEFAULT_TITLE);
 assert.equal(firstLayer(draft, "body")?.text, DEFAULT_BODY);
-ensureLayer(draft, "title").text = "바꿈";
-ensureLayer(draft, "body").text = "";
-draft.layers.push({ ...structuredClone(ensureLayer(draft, "title")), id: newLayerId() });
-resetStudioState(draft, "#ffffff");
-assert.equal(titleText(draft), DEFAULT_TITLE);
-assert.equal(firstLayer(draft, "body")?.text, DEFAULT_BODY);
-assert.equal(draft.layers.length, 3);
-assert.equal(draft.themeSlug, "capsule-pattern");
-
-const baseline = createStudioState("capsule-pattern", "#ffffff");
-ensureLayer(baseline, "title").text = "세팅";
-ensureLayer(baseline, "title").x = 120;
-ensureLayer(draft, "title").text = "다른 값";
-applyStudioBaseline(draft, baseline, "#ffffff");
-assert.equal(titleText(draft), "세팅");
-assert.equal(firstLayer(draft, "title")?.x, 120);
-ensureLayer(draft, "title").text = "다시";
-applyStudioBaseline(draft, null, "#ffffff");
-assert.equal(titleText(draft), DEFAULT_TITLE);
-assert.equal(draft.themeSlug, "capsule-pattern");
-
 // Alignment lines each box up on the card, including a single selection.
 const card = { x: 0, y: 0, w: 1080, h: 1080 };
 const alignBoxes = [
@@ -203,22 +160,6 @@ const spaceBoxes = [
 ];
 assert.deepEqual(alignOffsets(spaceBoxes, "hspace", card), [{ dx: 0, dy: 0 }, { dx: 0, dy: 0 }, { dx: 175, dy: 0 }]);
 assert.deepEqual(alignOffsets(spaceBoxes, "vspace", card), [{ dx: 0, dy: 0 }, { dx: 0, dy: 0 }, { dx: 0, dy: 155 }]);
-
-// Each size preset resets inside its own size, and a baseline keeps the panel as it is.
-const story = createStudioState("capsule-pattern", "#ffffff", "ig-story");
-assert.deepEqual([story.presetId, story.cardWidth, story.cardHeight], ["ig-story", 1080, 1920]);
-story.cardWidth = 900;
-ensureLayer(story, "title").text = "바꿈";
-resetStudioState(story, "#ffffff");
-assert.deepEqual([story.presetId, story.cardWidth, story.cardHeight], ["ig-story", 1080, 1920]);
-assert.equal(titleText(story), DEFAULT_TITLE);
-const storyBaseline = createStudioState("capsule-pattern", "#ffffff", "ig-story");
-storyBaseline.controlsWidth = 500;
-ensureLayer(storyBaseline, "title").text = "스토리";
-story.controlsWidth = 420;
-applyStudioBaseline(story, storyBaseline, "#ffffff");
-assert.equal(titleText(story), "스토리");
-assert.equal(story.controlsWidth, 420);
 
 // Cards and baselines saved before layers keep their content.
 const legacy = normalizeStudioState({
@@ -400,25 +341,6 @@ assert.match(rendered, /A&lt;B/);
 assert.match(rendered, /본문/);
 assert.equal(sanitizeStudioCode(`<div onclick="alert(1)"><script>alert(1)</script>ok</div>`), "<div>ok</div>");
 
-assert.deepEqual(parseHash("#/studio"), { name: "studio", theme: null, card: null });
-assert.deepEqual(parseHash("#/studio?theme=capsule-pattern"), {
-  name: "studio",
-  theme: "capsule-pattern",
-  card: null,
-});
-assert.deepEqual(parseHash("#/studio?card=saved-abc"), {
-  name: "studio",
-  theme: null,
-  card: "saved-abc",
-});
-assert.deepEqual(parseHash("#/intake"), { name: "studio", theme: null, card: null });
-assert.deepEqual(parseHash("#/design-system"), { name: "studio", theme: null, card: null });
-assert.deepEqual(parseHash("#/stats"), { name: "studio", theme: null, card: null });
-assert.equal(isLegacyStudioHash("#/intake"), true);
-assert.equal(isLegacyStudioHash("#/studio"), false);
-assert.equal(hrefFor({ name: "studio", theme: "warm-earth-oval", card: null }), "#/studio?theme=warm-earth-oval");
-assert.equal(hrefFor({ name: "studio", theme: "warm-earth-oval", card: "saved-abc" }), "#/studio?card=saved-abc");
-
 const square = { x: 10, y: 20, width: 100, height: 40 };
 const stretched = resizeShape(square, "e", 30, 0, false);
 assert.equal(stretched.width, 130);
@@ -580,9 +502,6 @@ assert.deepEqual(grouped.locked, [groupIds[1]]);
 assert.equal(unlockLayers(grouped, groupIds), true);
 assert.equal(grouped.locked, undefined);
 lockLayers(grouped, groupIds);
-resetStudioState(grouped, grouped.color);
-assert.equal(grouped.groups, undefined);
-assert.equal(grouped.locked, undefined);
 assert.equal(
   penContains(
     {
@@ -793,58 +712,6 @@ assert.equal(nodeBounds(shapeNodes(sharpRect)).width > 30, true);
 const starred = parseVectorLayer({ id: "star", kind: "shape", shape: "star", x: 0, y: 0, width: 80, height: 80, radius: 0, color: "#112233", inner: 0.5 }, "#000000");
 assert.equal(starred?.kind === "shape" ? starred.inner : 0, 0.5);
 
-const speakerSrcs = ["conf:speaker-001", "conf:speaker-002", "conf:speaker-003", "conf:speaker-004"];
-const speakerMaster = createStudioState("conf:speaker-001", "#102a4a");
-speakerMaster.layers.push({ id: "logo", kind: "image", src: "conf:logo-skku-4", x: 10, y: 10, width: 200, radius: 0, crop: null });
-const title = speakerMaster.layers.find((layer) => layer.kind === "title");
-if (title?.kind === "title") title.text = "AI + DESIGN FUTURE";
-const deck = speakerSlides(speakerMaster, speakerSrcs);
-assert.equal(deck.index, 0);
-assert.equal(deck.slides.length, 4);
-assert.equal(speakerSrcOf(deck.slides[0]!), "conf:speaker-001");
-assert.equal(speakerSrcOf(deck.slides[2]!), "conf:speaker-003");
-assert.equal(deck.slides[2]!.themeSlug, "conf:speaker-003");
-const copiedTitle = deck.slides[2]!.layers.find((layer) => layer.kind === "title");
-assert.equal(copiedTitle?.kind === "title" ? copiedTitle.text : "", "AI + DESIGN FUTURE");
-const copiedLogo = deck.slides[2]!.layers.find((layer) => layer.kind === "image" && layer.src.startsWith("conf:logo"));
-assert.equal(copiedLogo?.kind === "image" ? copiedLogo.src : "", "conf:logo-skku-4");
-const customThird = structuredClone(deck.slides[2]!);
-const customTitle = customThird.layers.find((layer) => layer.kind === "title");
-if (customTitle?.kind === "title") customTitle.text = "ONLY THREE";
-const mixed = instagramDeck(speakerMaster, speakerSrcs, { "conf:speaker-003": customThird });
-const mixedTitle = (index: number) => {
-  const layer = mixed.slides[index]?.layers.find((item) => item.kind === "title");
-  return layer?.kind === "title" ? layer.text : "";
-};
-assert.equal(mixed.index, 0);
-assert.equal(mixedTitle(0), "AI + DESIGN FUTURE");
-assert.equal(mixedTitle(2), "ONLY THREE");
-assert.equal(speakerSrcOf(mixed.slides[1]!), "conf:speaker-002");
-assert.notEqual(mixed.slides[2], customThird);
-const third = createStudioState("conf:speaker-003", "#102a4a");
-const fromThird = speakerSlides(third, speakerSrcs);
-assert.equal(fromThird.index, 2);
-assert.equal(speakerSrcOf(fromThird.slides[2]!), "conf:speaker-003");
-assert.equal(speakerSrcOf(fromThird.slides[0]!), "conf:speaker-001");
-const reordered = applySpeakerOrder(speakerSrcs, ["conf:speaker-004", "conf:speaker-002", "conf:missing"]);
-assert.deepEqual(reordered, ["conf:speaker-004", "conf:speaker-002", "conf:speaker-001", "conf:speaker-003"]);
-assert.deepEqual(applySpeakerOrder(speakerSrcs, []), speakerSrcs);
-assert.deepEqual(speakerSrcs, ["conf:speaker-001", "conf:speaker-002", "conf:speaker-003", "conf:speaker-004"]);
-assert.deepEqual(CONFERENCE_DEFAULTS.instagramOrder, ["conf:speaker-002", "conf:speaker-003", "conf:speaker-004", "conf:speaker-001"]);
-assert.deepEqual(applySpeakerOrder(speakerSrcs, CONFERENCE_DEFAULTS.instagramOrder), CONFERENCE_DEFAULTS.instagramOrder);
-const defaultCards = CONFERENCE_DEFAULTS.instagramCards as Record<string, unknown>;
-for (const src of CONFERENCE_DEFAULTS.instagramOrder) {
-  const card = normalizeStudioState(defaultCards[src]);
-  assert.equal(card?.presetId, "conf-instagram");
-  assert.equal(card ? speakerSrcOf(card) : "", src);
-}
-const kim = normalizeStudioState(CONFERENCE_DEFAULTS.instagramCards["conf:speaker-002"]);
-assert.equal(kim?.layers.some((layer) => layer.kind === "body" && layer.text.startsWith("김규영")), true);
-const poster = normalizeStudioState(CONFERENCE_DEFAULTS.baselines["conf-poster"]);
-assert.equal(poster?.presetId, "conf-poster");
-assert.equal(poster?.cardWidth, 2880);
-assert.ok((poster?.layers.length ?? 0) > 10);
-
 assert.equal(GIF_LONG_EDGE, 1080);
 assert.deepEqual(gifSize(2160, 2160), { width: 1080, height: 1080 });
 assert.deepEqual(gifSize(100, 50), { width: 100, height: 50 });
@@ -922,4 +789,4 @@ const faded = solidFrame(1, 1, 0, 0, 255, 0);
 const fadedPdf = await cardPdf(faded, 1, 1);
 assert.ok(new TextDecoder("latin1").decode(fadedPdf).includes("/SMask 6 0 R"));
 
-console.log("OK: studio preset, size, font, radius, wrap, ink, code, and route checks");
+console.log("OK: studio preset, size, font, radius, wrap, ink, and code checks");

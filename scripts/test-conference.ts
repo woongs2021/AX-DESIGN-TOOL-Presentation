@@ -1,22 +1,18 @@
 import assert from "node:assert/strict";
-import { PNG } from "pngjs";
 import {
   backgroundIdFor,
   CONFERENCE_PRESETS,
   conferencePresetById,
   conferenceSrc,
-  createConferenceState,
   logoSlug,
-  presetBackground,
-  printSize,
   speakerSlug,
   videoExportSizes,
   type ConferenceIndex,
 } from "../src/shared/conference.ts";
-import { createPngEncoder, crc32, pixelsPerMeter, printStrips } from "../src/shared/print-png.ts";
 import { bareCardColor, cardIsBare, designToCode, normalizeStudioState, rgbToHex } from "../src/shared/studio.ts";
-import { createBlankPage, createPresentationDeck, createTypedPage, defaultPresentationDeck, defaultsWithPage, duplicatePresentationPage, insertPresentationPage, loadPresentationDeck, movePresentationPages, recolorBarePages, removePresentationPage, removePresentationPages, reorderPresentationPage, savePresentationDeck, syncPresentationMode } from "../src/shared/presentation.ts";
+import { createBlankPage, createPresentationDeck, createTypedPage, deckDefaults, defaultPresentationDeck, defaultsWithPage, duplicatePresentationPage, insertPresentationPage, loadPresentationDeck as loadDeck, movePresentationPages, recolorBarePages, removePresentationPage, removePresentationPages, reorderPresentationPage, savePresentationDeck as saveDeck, syncPresentationMode, type PresentationDeck } from "../src/shared/presentation.ts";
 import { hrefFor, parseHash } from "../src/router.ts";
+import PROJECT_1_DECK from "../presentation/project 1/deck.json";
 
 const store = new Map<string, string>();
 Object.assign(globalThis, {
@@ -26,7 +22,6 @@ Object.assign(globalThis, {
     removeItem: (key: string) => void store.delete(key),
   },
 });
-const { baselineStore, CONFERENCE_BASELINE_KEY, clearBaseline, writeBaseline } = await import("../src/studio-baseline.ts");
 
 const media = (path: string) => ({ path, width: 100, height: 100, bytes: 1 });
 const index: ConferenceIndex = {
@@ -40,13 +35,12 @@ const index: ConferenceIndex = {
   logos: [{ id: "logo-skku-1", label: "성균관대로고 1", path: "l.svg", thumbPath: "l.svg", format: "svg", width: 1080, height: 1080, bytes: 1 }],
 };
 
-// Presets and names
+// The Presentation's one card size, and the names the page-folder sync reads
 assert.deepEqual(
-  CONFERENCE_PRESETS.map((preset) => `${preset.width}x${preset.height}`),
-  ["2160x2160", "2880x3840", "3840x2160", "2400x2400", "1280x3840", "3840x1024"],
+  CONFERENCE_PRESETS.map((preset) => `${preset.id} ${preset.width}x${preset.height}`),
+  ["conf-slide 3840x2160"],
 );
-assert.ok(CONFERENCE_PRESETS.every((preset) => preset.width <= 4000 && preset.height <= 4000));
-assert.equal(conferencePresetById("nope").id, "conf-instagram");
+assert.equal(conferencePresetById("nope").id, "conf-slide");
 assert.equal(backgroundIdFor("Insta_1x1_2160x2160.mp4"), "instagram");
 assert.equal(backgroundIdFor("x_banner_1x3_1280×3840.mp4"), "banner-x");
 assert.equal(backgroundIdFor("L_banner_6x1_5400x900mm_100dpi.png"), "banner-l");
@@ -61,83 +55,31 @@ assert.equal(logoSlug("모르는파일.svg"), null);
 assert.equal(speakerSlug("001.png"), "speaker-001");
 assert.equal(conferenceSrc({ id: "speaker-001" }), "conf:speaker-001");
 
-// Background follows the preset; video mode survives only where the background has a video
-assert.deepEqual(presetBackground(index, "conf-banner-x", { id: "instagram", mode: "video" }), { id: "banner-x", mode: "video" });
-assert.deepEqual(presetBackground(index, "conf-banner-l", { id: "instagram", mode: "video" }), { id: "banner-l", mode: "image" });
-assert.deepEqual(presetBackground(index, "conf-instagram", null), { id: "instagram", mode: "image" });
-assert.deepEqual(presetBackground(index, "conf-slide-front", null), { id: "instagram", mode: "image" });
-
-// Video sizes: card size first, then the fallback edge on the same ratio, both even
-assert.deepEqual(videoExportSizes("conf-instagram", 2160, 2160), [{ width: 2160, height: 2160 }, { width: 1920, height: 1920 }]);
-assert.deepEqual(videoExportSizes("conf-poster", 2880, 3840), [{ width: 2880, height: 3840 }, { width: 2160, height: 2880 }]);
-assert.deepEqual(videoExportSizes("conf-banner-x", 1280, 3840), [{ width: 1280, height: 3840 }, { width: 960, height: 2880 }]);
+// Video sizes (동영상 on a page with a video background): card size first, then 1920 on the same ratio, both even
+assert.deepEqual(videoExportSizes("conf-slide", 3840, 2160), [{ width: 3840, height: 2160 }, { width: 1920, height: 1080 }]);
 assert.ok(videoExportSizes("conf-slide", 1001, 563).every((size) => size.width % 2 === 0 && size.height % 2 === 0));
 
-// Print sizes match the original backgrounds
-assert.deepEqual(printSize("conf-banner-x", 1280, 3840), { width: 3543, height: 10630, dpi: 150 });
-assert.deepEqual(printSize("conf-banner-x", 1280, 2560), { width: 3543, height: 7086, dpi: 150 });
-assert.deepEqual(printSize("conf-banner-l", 3840, 1024), { width: 17717, height: 4724, dpi: 100 });
-assert.equal(printSize("conf-instagram", 2160, 2160), null);
-const strips = printStrips(21260, 3543);
-assert.equal(strips.reduce((sum, strip) => sum + strip.h, 0), 3543);
-assert.ok(strips.every((strip) => strip.h * 21260 <= 8_000_000));
-assert.deepEqual(printStrips(10, 5, 20), [{ y: 0, h: 2 }, { y: 2, h: 2 }, { y: 4, h: 1 }]);
-
-// Streamed PNG decodes to the same pixels and carries the dpi
-assert.equal(crc32(new TextEncoder().encode("IEND")), 0xae426082);
-const width = 7;
-const height = 5;
-const pixels = new Uint8Array(width * height * 4).map((_, i) => (i * 37) % 256);
-const encoder = createPngEncoder(width, height, 150);
-for (const strip of printStrips(width, height, 14)) {
-  await encoder.writeRows(pixels.subarray(strip.y * width * 4, (strip.y + strip.h) * width * 4), strip.h);
-}
-const file = Buffer.concat(await encoder.finish());
-const decoded = PNG.sync.read(file);
-assert.equal(decoded.width, width);
-assert.equal(decoded.height, height);
-assert.deepEqual(new Uint8Array(decoded.data), pixels);
-const phys = file.indexOf("pHYs");
-assert.ok(phys > 0);
-assert.equal(file.readUInt32BE(phys + 4), pixelsPerMeter(150));
-assert.equal(file[phys + 12], 1);
-
-// Built-in layout and saved state
-const state = createConferenceState("conf-banner-l", index);
-assert.equal(state.cardWidth, 3840);
-assert.deepEqual(state.background, { id: "banner-l", mode: "image" });
-const image = state.layers.find((layer) => layer.kind === "image");
-assert.equal(image?.kind === "image" ? image.src : "", "conf:speaker-001");
-assert.ok(image && image.kind === "image" && image.y + image.width * 2 <= state.cardHeight + 1);
+// A saved Slide keeps its conference background and a tinted logo
+const state = createTypedPage(1, index, "dark").state;
+assert.deepEqual(state.background, { id: "slide", mode: "image" });
 const tinted = structuredClone(state);
-const tintedImage = tinted.layers.find((layer) => layer.kind === "image");
-if (tintedImage?.kind === "image") tintedImage.tint = "#ffffff";
+tinted.layers.push({ id: "logo", kind: "image", src: "conf:logo-skku-1", x: 0, y: 0, width: 200, radius: 0, crop: null, tint: "#ffffff" });
 const restored = normalizeStudioState(JSON.parse(JSON.stringify(tinted)));
-assert.deepEqual(restored?.background, { id: "banner-l", mode: "image" });
-assert.equal(restored?.layers.find((layer) => layer.kind === "image")?.kind === "image" ? (restored.layers.find((layer) => layer.kind === "image") as { tint?: string }).tint : null, "#ffffff");
+assert.deepEqual(restored?.background, { id: "slide", mode: "image" });
+assert.equal((restored?.layers.find((layer) => layer.id === "logo") as { tint?: string } | undefined)?.tint, "#ffffff");
 assert.ok(designToCode(state, () => 2).includes('<img class="studio-bg" src="{{image:background}}"'));
-assert.ok(designToCode({ ...state, background: { id: "instagram", mode: "video" } }, () => 2).includes("<video class=\"studio-bg\""));
+assert.ok(designToCode({ ...state, background: { id: "slide", mode: "video" } }, () => 2).includes("<video class=\"studio-bg\""));
 
-// Conference keeps its own baseline store; clearing Online Studio leaves it alone
-const conference = baselineStore(CONFERENCE_BASELINE_KEY, (presetId) => createConferenceState(presetId, index));
-const edited = createConferenceState("conf-poster", index);
-edited.color = "#123456";
-conference.write(edited);
-writeBaseline(createConferenceState("conf-poster", index));
-clearBaseline();
-assert.equal(conference.read("conf-poster")?.color, "#123456");
-conference.clear();
-assert.equal(conference.read("conf-poster")?.color, createConferenceState("conf-poster", index).color);
-assert.ok(store.has(CONFERENCE_BASELINE_KEY) === false);
+// Route: the Presentation opens one project; the original tabs are gone
+assert.deepEqual(parseHash("#/presentation"), { name: "presentation", project: null });
+assert.deepEqual(parseHash("#/presentation/project-1"), { name: "presentation", project: "project-1" });
+assert.equal(hrefFor({ name: "presentation", project: null }), "#/presentation");
+assert.equal(hrefFor({ name: "presentation", project: "project-1" }), "#/presentation/project-1");
+assert.equal(parseHash("#/conference").name, "notfound");
 
-// Route
-assert.deepEqual(parseHash("#/conference"), { name: "conference", card: null });
-assert.deepEqual(parseHash("#/conference?card=abc"), { name: "conference", card: "abc" });
-assert.equal(hrefFor({ name: "conference", card: null }), "#/conference");
-assert.equal(hrefFor({ name: "conference", card: "abc" }), "#/conference?card=abc");
-assert.deepEqual(parseHash("#/presentation"), { name: "presentation" });
-assert.equal(hrefFor({ name: "presentation" }), "#/presentation");
-
+// The working deck of one project in this browser
+const savePresentationDeck = (deck: PresentationDeck) => saveDeck("project-1", deck, null);
+const loadPresentationDeck = (conference: ConferenceIndex) => loadDeck("project-1", null, () => createPresentationDeck(conference));
 const deck = createPresentationDeck(index);
 assert.equal(deck.pages.length, 10);
 assert.equal(deck.pages[0]?.type, 2);
@@ -268,15 +210,17 @@ assert.equal(ranged.pages[ranged.selected]?.id, ids[0]);
 assert.equal(removePresentationPages(ranged, ranged.pages.map((_, at) => at)), false);
 
 // Default pages: one page replaces its twin by id, or lands after its nearest earlier neighbour
-const fresh = defaultPresentationDeck(index);
+const projectDefaults = deckDefaults(PROJECT_1_DECK.pages);
+const basePages = () => defaultPresentationDeck(projectDefaults)!.pages;
+const fresh = defaultPresentationDeck(projectDefaults)!;
 const defaultCount = fresh.pages.length;
 assert.ok(defaultCount >= 1);
 fresh.pages[1].name = "Edited";
-assert.equal(defaultsWithPage(fresh, 1, index)[1]?.name, "Edited");
-assert.equal(defaultsWithPage(fresh, 1, index).length, defaultCount);
+assert.equal(defaultsWithPage(fresh, 1, basePages())[1]?.name, "Edited");
+assert.equal(defaultsWithPage(fresh, 1, basePages()).length, defaultCount);
 const added = createTypedPage(3, index, "dark");
 insertPresentationPage(fresh, 2, added);
-const merged = defaultsWithPage(fresh, 3, index);
+const merged = defaultsWithPage(fresh, 3, basePages());
 assert.equal(merged.length, defaultCount + 1);
 assert.equal(merged[3]?.id, added.id);
 assert.equal(merged[2]?.id, fresh.pages[2]?.id);
@@ -333,4 +277,4 @@ assert.equal(recolorBarePages(bareDeck, "light"), true);
 assert.equal(barePage.state.color, bareCardColor("light"));
 assert.equal(bareDeck.pages[0]?.state.color, keptColor);
 
-console.log("OK: conference presets, slugs, backgrounds, video and print sizes, PNG encoder, baselines, and routes");
+console.log("OK: Slide preset, slugs, video sizes, saved slide, routes, and the deck model");

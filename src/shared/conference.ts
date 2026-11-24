@@ -1,58 +1,21 @@
 /**
- * Conference tab: size presets, the conference.json contract, and the built-in layouts.
- * Internal and public builds both write conference.json. Without that file the tab is not shown.
+ * Conference data the Presentation reads: the conference.json contract (Slide background, speakers, logos),
+ * the Slide card preset, and the file-name slugs the page-folder sync uses.
+ * Without conference.json the Presentation does not load.
  */
-import {
-  clampFontSize,
-  clampImageWidth,
-  clampTextOffset,
-  CONTROLS_DEFAULT,
-  DEFAULT_BODY,
-  DEFAULT_TITLE,
-  rgbToHex,
-  type ImageLayer,
-  type StudioBackground,
-  type StudioState,
-  type TextLayer,
-} from "./studio.ts";
-import type { StudioPreset } from "./studio-presets.ts";
+import type { StudioPreset } from "./studio.ts";
 
-export type ConferencePrint = { width: number; height: number; dpi: number };
 export type ConferencePreset = StudioPreset & {
   /** Background id in conference.json. */
   background: string;
-  /** Print-resolution PNG. Null when the preset has no print size. */
-  print: ConferencePrint | null;
   /** Long edge of the video export when the browser encoder cannot take the card size. */
   videoFallbackEdge: number;
 };
 
 export const CONFERENCE_PRESETS: readonly ConferencePreset[] = [
-  { id: "conf-instagram", name: "Instagram", width: 2160, height: 2160, background: "instagram", print: null, videoFallbackEdge: 1920 },
-  { id: "conf-poster", name: "Poster", width: 2880, height: 3840, background: "poster", print: null, videoFallbackEdge: 2880 },
-  { id: "conf-slide", name: "Slide", width: 3840, height: 2160, background: "slide", print: null, videoFallbackEdge: 1920 },
-  { id: "conf-slide-front", name: "Slide Front", width: 2400, height: 2400, background: "instagram", print: null, videoFallbackEdge: 1920 },
-  {
-    id: "conf-banner-x",
-    name: "X배너",
-    width: 1280,
-    height: 3840,
-    background: "banner-x",
-    print: { width: 3543, height: 10630, dpi: 150 },
-    videoFallbackEdge: 2880,
-  },
-  {
-    id: "conf-banner-l",
-    name: "L배너",
-    width: 3840,
-    height: 1024,
-    background: "banner-l",
-    print: { width: 17717, height: 4724, dpi: 100 },
-    videoFallbackEdge: 1920,
-  },
+  { id: "conf-slide", name: "Slide", width: 3840, height: 2160, background: "slide", videoFallbackEdge: 1920 },
 ];
 
-export const DEFAULT_CONFERENCE_PRESET_ID = "conf-instagram";
 export const CONFERENCE_SRC_PREFIX = "conf:";
 
 export function conferencePresetById(id: string): ConferencePreset {
@@ -124,21 +87,6 @@ export function speakerSlug(fileName: string): string | null {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(base) ? `speaker-${base}` : null;
 }
 
-export function backgroundHasVideo(index: ConferenceIndex | null, id: string): boolean {
-  return Boolean(index?.backgrounds.find((item) => item.id === id)?.video);
-}
-
-/** The preset's background, keeping video when the new background has one. */
-export function presetBackground(
-  index: ConferenceIndex | null,
-  presetId: string,
-  current: StudioBackground | null | undefined,
-): StudioBackground {
-  const id = conferencePresetById(presetId).background;
-  const mode = current?.mode === "video" && backgroundHasVideo(index, id) ? "video" : "image";
-  return { id, mode };
-}
-
 /** Video export sizes: the card size first, then the preset's fallback edge on the same ratio. Both even. */
 export function videoExportSizes(presetId: string, cardWidth: number, cardHeight: number): { width: number; height: number }[] {
   const even = (value: number) => Math.max(2, Math.round(value / 2) * 2);
@@ -146,129 +94,4 @@ export function videoExportSizes(presetId: string, cardWidth: number, cardHeight
   const scale = conferencePresetById(presetId).videoFallbackEdge / Math.max(cardWidth, cardHeight);
   const fallback = { width: even(cardWidth * scale), height: even(cardHeight * scale) };
   return fallback.width === first.width && fallback.height === first.height ? [first] : [first, fallback];
-}
-
-/** Print size for the current card: the preset's print width, height on the card's ratio. */
-export function printSize(presetId: string, cardWidth: number, cardHeight: number): ConferencePrint | null {
-  const preset = conferencePresetById(presetId);
-  const print = preset.print;
-  if (!print) return null;
-  // At the preset size the print matches the original background exactly (3543 × 10630, not × 10629).
-  if (cardWidth === preset.width && cardHeight === preset.height) return { ...print };
-  const scale = print.width / Math.max(1, cardWidth);
-  return { width: print.width, height: Math.max(1, Math.round(cardHeight * scale)), dpi: print.dpi };
-}
-
-/** Built-in layout for a preset: white title and body top left, the first speaker bottom right. */
-export function createConferenceState(presetId: string, index: ConferenceIndex | null): StudioState {
-  const preset = conferencePresetById(presetId);
-  const { width, height } = preset;
-  const margin = Math.round(Math.min(width, height) * 0.08);
-  const titleSize = clampFontSize(Math.min(width * 0.06, height * 0.16), width);
-  const bodySize = clampFontSize(titleSize * 0.36, width);
-  const ink = rgbToHex(255, 255, 255);
-  const speaker = index?.speakers[0] ?? index?.logos[0] ?? null;
-  const src = speaker ? conferenceSrc(speaker) : "";
-  const aspect = speaker ? speaker.height / Math.max(1, speaker.width) : 1;
-  const imageHeight = Math.min(height * 0.62, width * 0.5 * aspect);
-  const imageWidth = clampImageWidth(imageHeight / aspect);
-  const image: ImageLayer = {
-    id: "image",
-    kind: "image",
-    src,
-    x: Math.round(width - imageWidth - margin),
-    y: Math.round(height - imageWidth * aspect),
-    width: imageWidth,
-    radius: 0,
-    crop: null,
-  };
-  const text = (kind: "title" | "body", size: number, y: number): TextLayer => ({
-    id: kind,
-    kind,
-    text: kind === "title" ? DEFAULT_TITLE : DEFAULT_BODY,
-    x: clampTextOffset(margin, width, size),
-    y: clampTextOffset(y, height, size),
-    size,
-    fontId: kind === "title" ? "montserrat" : "pretendard",
-    color: ink,
-    weight: kind === "title" ? 600 : 400,
-    italic: false,
-    underline: false,
-    align: "left",
-  });
-  return {
-    presetId: preset.id,
-    cardWidth: width,
-    cardHeight: height,
-    themeSlug: src,
-    color: rgbToHex(16, 42, 74),
-    radius: 0,
-    code: "",
-    panel: "design",
-    controlsWidth: CONTROLS_DEFAULT,
-    background: presetBackground(index, preset.id, null),
-    layers: [image, text("body", bodySize, margin + Math.round(titleSize * 1.6)), text("title", titleSize, margin)],
-  };
-}
-
-/** The speaker photo on a card, when one is placed. */
-export function speakerSrcOf(state: StudioState): string {
-  const prefix = `${CONFERENCE_SRC_PREFIX}speaker-`;
-  const layer = state.layers.find((item) => item.kind === "image" && item.src.startsWith(prefix));
-  if (layer?.kind === "image") return layer.src;
-  return state.themeSlug.startsWith(prefix) ? state.themeSlug : "";
-}
-
-/** Copies a card and swaps every speaker photo. Logos and text stay. */
-export function replaceSpeakerSrc(state: StudioState, src: string): StudioState {
-  const prefix = `${CONFERENCE_SRC_PREFIX}speaker-`;
-  const next = structuredClone(state);
-  if (next.themeSlug.startsWith(prefix)) next.themeSlug = src;
-  for (const layer of next.layers) {
-    if (layer.kind === "image" && layer.src.startsWith(prefix)) layer.src = src;
-  }
-  return next;
-}
-
-/**
- * One card per speaker, copied from the saved layout.
- * The slide that already uses a listed photo stays an exact copy.
- */
-export function speakerSlides(master: StudioState, srcs: readonly string[]): { index: number; slides: StudioState[] } {
-  const current = speakerSrcOf(master);
-  const found = srcs.indexOf(current);
-  const index = found < 0 ? 0 : found;
-  const slides = srcs.map((src, order) => (order === index && current === src ? structuredClone(master) : replaceSpeakerSrc(master, src)));
-  return { index, slides };
-}
-
-/** Keeps a saved snapshot for the slots that have one. Other slots stay copies of the shared layout. */
-export function instagramDeck(
-  master: StudioState,
-  srcs: readonly string[],
-  saved: Readonly<Record<string, StudioState | null | undefined>>,
-): { index: number; slides: StudioState[] } {
-  const built = speakerSlides(master, srcs);
-  return {
-    index: built.index,
-    slides: built.slides.map((slide, order) => {
-      const src = srcs[order] ?? "";
-      const card = src ? saved[src] : null;
-      return card ? structuredClone(card) : slide;
-    }),
-  };
-}
-
-/** Saved speaker order first. Speakers missing from that list keep their original order at the end. */
-export function applySpeakerOrder(srcs: readonly string[], saved: readonly string[]): string[] {
-  const known = new Set(srcs);
-  const ordered: string[] = [];
-  for (const src of saved) {
-    if (!known.has(src) || ordered.includes(src)) continue;
-    ordered.push(src);
-  }
-  for (const src of srcs) {
-    if (!ordered.includes(src)) ordered.push(src);
-  }
-  return ordered;
 }

@@ -4,7 +4,7 @@
  * Positions and type sizes are that board doubled onto the 4K slide.
  * English display uses Montserrat. Korean uses Pretendard.
  */
-import { conferenceSrc, type ConferenceIndex, type ConferenceSource } from "./conference.ts";
+import { CONFERENCE_SRC_PREFIX, conferenceSrc, type ConferenceIndex, type ConferenceSource } from "./conference.ts";
 import {
   clampFontSize,
   clampImageOffset,
@@ -21,13 +21,14 @@ import {
   type TextLayer,
 } from "./studio.ts";
 import type { LinearGradient, ShapeLayer } from "./studio-shapes.ts";
-import PRESENTATION_DEFAULTS from "./presentation-defaults.json";
 import TYPE1_TEMPLATE from "./presentation-type1.json";
 import TYPE3_TEMPLATE from "./presentation-type3.json";
 
-export const PRESENTATION_DECK_KEY = "ax-presentation-deck";
-/** Dev server route that rewrites presentation-defaults.json. */
-export const PRESENTATION_DEFAULTS_ROUTE = "/__presentation-defaults";
+/** One working deck per project in this browser: ax-project-deck:<projectId>. */
+export const PROJECT_DECK_PREFIX = "ax-project-deck:";
+/** Phase 1 kept a single working deck here. It belongs to project-1 and moves there once. */
+export const LEGACY_DECK_KEY = "ax-presentation-deck";
+export const LEGACY_PROJECT_ID = "project-1";
 export const SLIDE_W = 3840;
 export const SLIDE_H = 2160;
 
@@ -214,12 +215,14 @@ export function createPresentationDeck(index: ConferenceIndex | null): Presentat
   return { selected: 0, pages: SPECS.map((spec, at) => buildPage(spec, index, at)) };
 }
 
-let defaultPages: unknown = PRESENTATION_DEFAULTS.pages;
+/** A project's deck.json pages, with the stamp a browser save is checked against so a deployed site can tell an old save from its own deck. */
+export type DeckDefaults = { pages: unknown[]; stamp: string };
 
-/** Which built-in deck a browser save was made against, so a deployed site can tell an old save from its own deck. */
-const DEFAULTS_STAMP = stampOf(JSON.stringify(PRESENTATION_DEFAULTS.pages));
+export function deckDefaults(pages: unknown[]): DeckDefaults {
+  return { pages, stamp: stampOf(JSON.stringify(pages)) };
+}
 
-function stampOf(text: string): string {
+export function stampOf(text: string): string {
   let hash = 0x811c9dc5;
   for (let at = 0; at < text.length; at += 1) {
     hash ^= text.charCodeAt(at);
@@ -228,29 +231,50 @@ function stampOf(text: string): string {
   return (hash >>> 0).toString(36);
 }
 
-/** The deck set with “기본값으로 세팅”, or the built-in pages when none is set. */
-export function defaultPresentationDeck(index: ConferenceIndex | null): PresentationDeck {
-  const deck = parseDeck({ version: DECK_VERSION, selected: 0, pages: structuredClone(defaultPages) }, false);
-  return deck ?? createPresentationDeck(index);
+export function projectDeckKey(projectId: string): string {
+  return `${PROJECT_DECK_PREFIX}${projectId}`;
 }
 
-export function loadPresentationDeck(index: ConferenceIndex | null): PresentationDeck {
+/** Moves Phase 1's single working deck to project-1, once. */
+export function migrateLegacyDeck(): void {
   try {
-    const raw = localStorage.getItem(PRESENTATION_DECK_KEY);
+    const raw = localStorage.getItem(LEGACY_DECK_KEY);
+    if (raw == null) return;
+    const key = projectDeckKey(LEGACY_PROJECT_ID);
+    if (localStorage.getItem(key) == null) localStorage.setItem(key, raw);
+    localStorage.removeItem(LEGACY_DECK_KEY);
+  } catch {
+    /* Storage is off: there is nothing to move. */
+  }
+}
+
+/** The project's deck.json pages. Null when it has none that parse. */
+export function defaultPresentationDeck(defaults: DeckDefaults | null): PresentationDeck | null {
+  if (!defaults) return null;
+  return parseDeck({ version: DECK_VERSION, selected: 0, pages: structuredClone(defaults.pages) }, false);
+}
+
+/**
+ * The project's working deck in this browser, or its deck.json, or `fallback`.
+ * `defaults` is null for a project made in this browser: its save is the project.
+ */
+export function loadPresentationDeck(projectId: string, defaults: DeckDefaults | null, fallback: () => PresentationDeck): PresentationDeck {
+  try {
+    const raw = localStorage.getItem(projectDeckKey(projectId));
     const parsed = raw ? (JSON.parse(raw) as unknown) : null;
     // A deployed site shows each deploy's deck: a save made against older defaults gives way. The dev server keeps the working copy.
-    const stale = !import.meta.env?.DEV && (parsed as { defaults?: unknown } | null)?.defaults !== DEFAULTS_STAMP;
+    const stale = defaults != null && !import.meta.env?.DEV && (parsed as { defaults?: unknown } | null)?.defaults !== defaults.stamp;
     const deck = stale ? null : parseDeck(parsed);
     if (deck) return deck;
   } catch {
     /* A broken save falls back to the default pages. */
   }
-  return defaultPresentationDeck(index);
+  return defaultPresentationDeck(defaults) ?? fallback();
 }
 
-/** Default pages with deck page `at` set as it is now. A page new to the defaults goes after its nearest earlier neighbour. */
-export function defaultsWithPage(deck: PresentationDeck, at: number, index: ConferenceIndex | null): PresentationPage[] {
-  const pages = defaultPresentationDeck(index).pages;
+/** Default pages `base` with deck page `at` set as it is now. A page new to the defaults goes after its nearest earlier neighbour. */
+export function defaultsWithPage(deck: PresentationDeck, at: number, base: PresentationPage[]): PresentationPage[] {
+  const pages = [...base];
   const page = deck.pages[at];
   if (!page) return pages;
   const found = pages.findIndex((item) => item.id === page.id);
@@ -270,21 +294,14 @@ export function defaultsWithPage(deck: PresentationDeck, at: number, index: Conf
   return pages;
 }
 
-/** Writes the pages to presentation-defaults.json through the dev server. */
-export async function writePresentationDefaults(pages: PresentationPage[]): Promise<boolean> {
-  const body = { version: DECK_VERSION, selected: 0, pages: pages.map(storedPage) };
-  try {
-    const response = await fetch(PRESENTATION_DEFAULTS_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) return false;
-  } catch {
-    return false;
-  }
-  defaultPages = structuredClone(body.pages);
-  return true;
+/** What deck.json holds. */
+export function storedDeck(pages: PresentationPage[]) {
+  return { version: DECK_VERSION, selected: 0, pages: pages.map(storedPage) };
+}
+
+/** A deck read from deck.json or a browser save. Null when it does not parse. */
+export function readStoredDeck(raw: unknown): PresentationDeck | null {
+  return parseDeck(raw, false);
 }
 
 /** Moves a page so it lands at `to`, the slot before that index. The moved page stays selected. */
@@ -326,14 +343,15 @@ export function removePresentationPages(deck: PresentationDeck, ats: readonly nu
   return true;
 }
 
-export function savePresentationDeck(deck: PresentationDeck): void {
+/** Saves the project's working deck in this browser. Throws when storage is full. */
+export function savePresentationDeck(projectId: string, deck: PresentationDeck, defaults: DeckDefaults | null): void {
   const body = {
     version: DECK_VERSION,
-    defaults: DEFAULTS_STAMP,
+    defaults: defaults?.stamp ?? null,
     selected: deck.selected,
     pages: deck.pages.map(storedPage),
   };
-  localStorage.setItem(PRESENTATION_DECK_KEY, JSON.stringify(body));
+  localStorage.setItem(projectDeckKey(projectId), JSON.stringify(body));
 }
 
 function storedPage({ id, type, tone, role, state, name }: PresentationPage) {
@@ -341,8 +359,22 @@ function storedPage({ id, type, tone, role, state, name }: PresentationPage) {
   return label ? { id, type, tone, role, state, name: label } : { id, type, tone, role, state };
 }
 
-export function clearPresentationDeck(): void {
-  localStorage.removeItem(PRESENTATION_DECK_KEY);
+export function clearPresentationDeck(projectId: string): void {
+  localStorage.removeItem(projectDeckKey(projectId));
+}
+
+/** Conference sources a page shows that the page-folder sync copies in: conf: layers, and a background without its own file. */
+export function pageAssetKeys(page: Pick<PresentationPage, "state">): string[] {
+  const keys: string[] = [];
+  const add = (key: string) => {
+    if (key && !keys.includes(key)) keys.push(key);
+  };
+  for (const layer of page.state.layers) {
+    if (layer.kind === "image" && layer.src.startsWith(CONFERENCE_SRC_PREFIX)) add(layer.src);
+  }
+  const background = page.state.background;
+  if (background?.id && !background.file) add(`${background.mode === "video" ? "bgv" : "bg"}:${background.id}`);
+  return keys;
 }
 
 /** Rebuilds one page in another type. The designed type restores that frame. */
