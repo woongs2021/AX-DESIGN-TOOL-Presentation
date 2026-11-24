@@ -1,22 +1,30 @@
 import "./shared/tokens.css";
 import "./styles/base.css";
+import "./styles/projects.css";
 import type { ConferenceIndex } from "./shared/conference.ts";
 import type { SiteIndex } from "./shared/index-types.ts";
 import { loadUploads } from "./studio-uploads.ts";
 import { syncGraphicLibrary } from "./views/studio.ts";
 import { confirmProceed, showToast } from "./feedback.ts";
-import { hrefFor, onRouteChange } from "./router.ts";
-import { bindPresentation, releasePresentationMenu, renderPresentation } from "./views/presentation.ts";
+import { hrefFor, onRouteChange, parseHash, type Route } from "./router.ts";
+import { bindPresentation, releasePresentationMenu, renderPresentation, type DeckProject } from "./views/presentation.ts";
+import { bindProjects, releaseProjectsMenu, renderProjects } from "./views/projects.ts";
+import { refreshDiskThumb } from "./views/project-thumbs.ts";
+import { BUILT_PROJECTS } from "./built-projects.ts";
 import {
-  clearPresentationDeck,
-  defaultsWithPage,
-  loadPresentationDeck,
-  recolorBarePages,
-  savePresentationDeck,
-  syncPresentationMode,
-  writePresentationDefaults,
-  type PresentationDeck,
-} from "./shared/presentation.ts";
+  findProject,
+  lastOpened,
+  loadProjects,
+  projectDeck,
+  projectsOnDisk,
+  resetDecks,
+  saveProjectDeck,
+  setLastOpened,
+  setThumbnailPage,
+  writeProjectDefaults,
+  type Project,
+} from "./projects-store.ts";
+import { defaultPresentationDeck, defaultsWithPage, recolorBarePages, syncPresentationMode, type PresentationDeck } from "./shared/presentation.ts";
 
 const MODE_KEY = "ax-design-studio-mode";
 /** Conference backgrounds, speakers, and logos the slides are built from. */
@@ -25,16 +33,17 @@ const CONFERENCE_URL = "./data/conference.json";
 const INDEX_URL = "./data/index.json";
 /** The library images are not in this repo; AX-DESIGN-TOOL's Pages site serves them (with CORS). */
 const LIBRARY_ORIGIN = "https://woongs2021.github.io/AX-DESIGN-TOOL/";
-const HOME = hrefFor({ name: "presentation" });
+const HOME = hrefFor({ name: "projects" });
 
 type Mode = "light" | "dark";
 type LoadState =
   | { status: "loading" }
-  | { status: "error"; message: string }
+  | { status: "error"; message: string; hint: string }
   | { status: "ready"; conference: ConferenceIndex };
 
 let loadState: LoadState = { status: "loading" };
-let presentationDeck: PresentationDeck | null = null;
+/** The screen on show: the project list, or one project in the Presentation tab. */
+let view: { name: "projects" } | { name: "presentation"; project: string } = { name: "projects" };
 
 function readStoredMode(): Mode {
   const stored = localStorage.getItem(MODE_KEY);
@@ -77,19 +86,30 @@ function modeToggleIcon(mode: Mode): string {
   `;
 }
 
-function ensurePresentation(index: ConferenceIndex): PresentationDeck {
-  presentationDeck ??= loadPresentationDeck(index);
-  return presentationDeck;
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
+}
+
+function openProject(): Project | undefined {
+  return view.name === "presentation" ? findProject(view.project) : undefined;
 }
 
 function shell(mainHtml: string): string {
   const mode = readStoredMode();
   const nextModeLabel = mode === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환";
+  const project = openProject();
+  const crumb = project
+    ? `<nav class="nav-crumb" aria-label="경로"><a class="nav-crumb__link" href="${HOME}">Projects</a><span class="nav-crumb__sep" aria-hidden="true">/</span><span class="nav-crumb__current" aria-current="page" title="${escapeHtml(project.meta.title)}">${escapeHtml(project.meta.title)}</span></nav>`
+    : "";
   return `
     <header class="top-nav">
-      <a class="wordmark" href="${HOME}">AX Design Studio</a>
+      <div class="nav-start">
+        <a class="wordmark" href="${HOME}">AX Design Studio</a>
+        ${crumb}
+      </div>
       <nav class="nav-menu" aria-label="Primary">
-        ${navLink("Presentation", HOME, true)}
+        ${navLink("Projects", HOME, view.name === "projects")}
+        ${navLink("Presentation", hrefFor({ name: "presentation", project: null }), view.name === "presentation")}
       </nav>
       <div class="nav-actions">
         <button type="button" class="button button--secondary" id="mode-toggle" aria-label="${nextModeLabel}" title="${nextModeLabel}">
@@ -105,7 +125,7 @@ function shell(mainHtml: string): string {
         </div>
       </div>
     </header>
-    <main class="shell shell--studio" id="main">${mainHtml}</main>
+    <main class="shell ${view.name === "projects" ? "shell--projects" : "shell--studio"}" id="main">${mainHtml}</main>
   `;
 }
 
@@ -114,7 +134,7 @@ function renderMain(): string {
     return `
       <section class="state-panel state-panel--canvas" aria-busy="true">
         <h1 class="state-panel__title">Loading presentation</h1>
-        <p class="state-panel__text">Reading the conference data.</p>
+        <p class="state-panel__text">Reading the conference data and the projects.</p>
       </section>
     `;
   }
@@ -123,18 +143,74 @@ function renderMain(): string {
       <section class="state-panel state-panel--soft" role="alert">
         <h1 class="state-panel__title">Presentation failed to load</h1>
         <p class="state-panel__text">${loadState.message}</p>
-        <p class="state-panel__text">Check that <code>public/data/conference.json</code> exists.</p>
+        <p class="state-panel__text">${loadState.hint}</p>
         <p class="state-panel__text"><button type="button" class="button" id="index-retry">다시 불러오기</button></p>
       </section>
     `;
   }
-  const deck = ensurePresentation(loadState.conference);
+  const project = openProject();
+  if (!project) return renderProjects(readStoredMode());
+  const deck = projectDeck(project, readStoredMode());
   syncPresentationMode(deck, readStoredMode());
-  return renderPresentation(deck, loadState.conference);
+  return renderPresentation(deck, loadState.conference, deckProject(project));
+}
+
+function saveDeck(project: Project, deck: PresentationDeck): void {
+  if (!saveProjectDeck(project, deck)) showToast("브라우저 저장 공간이 부족해 덱을 저장하지 못했습니다.");
+}
+
+/** On localhost, thumbnail.webp follows deck.json and the thumbnail page, so the deployed card needs no drawing. */
+function refreshDiskThumbnail(project: Project, conference: ConferenceIndex): void {
+  void refreshDiskThumb(project, conference).catch(() => undefined);
+}
+
+function deckProject(project: Project): DeckProject {
+  return {
+    id: project.meta.id,
+    media: project.media,
+    thumbnailPageId: project.meta.thumbnailPageId,
+    onThumbnailPage: (pageId) => {
+      void (async () => {
+        if (!(await setThumbnailPage(project, pageId))) {
+          showToast("썸네일 페이지를 저장하지 못했습니다.");
+          return;
+        }
+        if (loadState.status === "ready") refreshDiskThumbnail(project, loadState.conference);
+        render();
+        showToast(pageId ? "프로젝트 썸네일로 지정했습니다." : "썸네일 지정을 해제했습니다. page 1이 썸네일입니다.");
+      })();
+    },
+  };
+}
+
+/** Puts the address on a screen that exists: #/projects, or #/presentation/<id> of a known project. */
+function resolveRoute(route: Route = parseHash()): void {
+  if (route.name === "projects") {
+    view = { name: "projects" };
+    return;
+  }
+  if (route.name === "notfound") {
+    history.replaceState(null, "", HOME);
+    view = { name: "projects" };
+    return;
+  }
+  // Until the list is read, keep the address; it is resolved again once the projects are in.
+  if (loadState.status !== "ready") return;
+  const id = route.project ?? lastOpened();
+  if (!findProject(id) || !id) {
+    if (route.project) showToast("프로젝트를 찾을 수 없습니다.");
+    history.replaceState(null, "", HOME);
+    view = { name: "projects" };
+    return;
+  }
+  if (!route.project) history.replaceState(null, "", hrefFor({ name: "presentation", project: id }));
+  view = { name: "presentation", project: id };
+  setLastOpened(id);
 }
 
 function render(): void {
   releasePresentationMenu();
+  releaseProjectsMenu();
   const app = document.querySelector<HTMLDivElement>("#app");
   if (!app) throw new Error("#app not found");
   applyMode(readStoredMode());
@@ -147,9 +223,10 @@ function render(): void {
   app.querySelector("#mode-toggle")?.addEventListener("click", () => {
     const next = readStoredMode() === "dark" ? "light" : "dark";
     applyMode(next);
-    if (loadState.status === "ready") {
-      const deck = ensurePresentation(loadState.conference);
-      if (recolorBarePages(deck, next)) savePresentationDeck(deck);
+    const project = loadState.status === "ready" ? openProject() : undefined;
+    if (project) {
+      const deck = projectDeck(project, next);
+      if (recolorBarePages(deck, next)) saveDeck(project, deck);
     }
     render();
   });
@@ -157,25 +234,27 @@ function render(): void {
 
   if (loadState.status !== "ready") return;
   const conference = loadState.conference;
-  if (presentationDeck) {
-    const deck = presentationDeck;
-    bindPresentation(app, deck, conference, {
-      onLoadPreset: () => false,
-      onSetPageDefault: async () => {
-        const ok = await writePresentationDefaults(defaultsWithPage(deck, deck.selected, conference));
-        if (ok) savePresentationDeck(deck);
-        return ok;
-      },
-      onSetDeckDefault: async () => {
-        const ok = await writePresentationDefaults(deck.pages);
-        if (ok) savePresentationDeck(deck);
-        return ok;
-      },
-    }, () => {
-      savePresentationDeck(deck);
-      render();
-    });
+  const project = openProject();
+  if (!project) {
+    bindProjects(app, { index: conference, tone: readStoredMode(), onChange: render });
+    return;
   }
+  const deck = projectDeck(project, readStoredMode());
+  const setDefaults = async (pages: PresentationDeck["pages"]) => {
+    const ok = projectsOnDisk() && (await writeProjectDefaults(project, pages));
+    if (ok) {
+      saveDeck(project, deck);
+      refreshDiskThumbnail(project, conference);
+    }
+    return ok;
+  };
+  bindPresentation(app, deck, conference, deckProject(project), {
+    onSetPageDefault: () => setDefaults(defaultsWithPage(deck, deck.selected, defaultPresentationDeck(project.defaults)?.pages ?? [])),
+    onSetDeckDefault: () => setDefaults(deck.pages),
+  }, () => {
+    saveDeck(project, deck);
+    render();
+  });
 }
 
 function bindSettingsMenu(app: HTMLElement): void {
@@ -213,8 +292,7 @@ function bindSettingsMenu(app: HTMLElement): void {
     void (async () => {
       const ok = await confirmProceed("세팅한 초기화 기준을 지우고 진행하시겠습니까?");
       if (!ok) return;
-      clearPresentationDeck();
-      presentationDeck = null;
+      resetDecks();
       render();
       showToast("리셋하였습니다.");
     })();
@@ -259,25 +337,31 @@ async function loadData(): Promise<void> {
   loadState = { status: "loading" };
   render();
   const extras = Promise.all([loadUploads(), readGraphicLibrary()]);
+  const listed = loadProjects(BUILT_PROJECTS);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const conference = await readConference();
     if (conference) {
       await extras;
+      if (!(await listed)) {
+        loadState = { status: "error", message: "The project list could not be read.", hint: "Check that the dev server (npm run dev) is running." };
+        render();
+        return;
+      }
       loadState = { status: "ready", conference };
+      resolveRoute();
       render();
       return;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 400));
   }
   await extras;
-  loadState = { status: "error", message: `${CONFERENCE_URL} could not be read.` };
+  loadState = { status: "error", message: `${CONFERENCE_URL} could not be read.`, hint: "Check that <code>public/data/conference.json</code> exists." };
   render();
 }
 
-// Only the Presentation lives here, so every address shows it.
-if (window.location.hash !== HOME) history.replaceState(null, "", HOME);
-onRouteChange(() => {
-  if (window.location.hash !== HOME) history.replaceState(null, "", HOME);
+// The first screen is Projects. An unknown address goes there too.
+onRouteChange((route) => {
+  resolveRoute(route);
   render();
 });
 

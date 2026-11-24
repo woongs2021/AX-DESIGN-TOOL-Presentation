@@ -1,6 +1,6 @@
 /**
- * Images added with the theme list's + button. Browser-local (IndexedDB), not written to the vault.
- * Layers point at them as upload:<id>.
+ * Images added in this browser before page folders existed (IndexedDB ax-studio-uploads). Layers point at them as upload:<id>.
+ * New files go to the page folder; these are only read so older pages still show them.
  */
 import { UPLOAD_PREFIX } from "./shared/studio.ts";
 
@@ -12,11 +12,7 @@ const STORE = "images";
 
 let uploads: StudioUpload[] = [];
 
-export function getUploads(): StudioUpload[] {
-  return uploads;
-}
-
-export function uploadSrc(upload: StudioUpload): string {
+function uploadSrc(upload: StudioUpload): string {
   return `${UPLOAD_PREFIX}${upload.id}`;
 }
 
@@ -64,34 +60,5 @@ export async function loadUploads(): Promise<void> {
     uploads = stored.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)).map(toUpload);
   } catch {
     uploads = [];
-  }
-}
-
-export async function addUpload(file: File): Promise<StudioUpload | null> {
-  const stored: StoredUpload = {
-    id: `upload-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    name: file.name,
-    createdAt: new Date().toISOString(),
-    blob: file,
-  };
-  try {
-    await run("readwrite", (store) => store.put(stored));
-    const upload = toUpload(stored);
-    uploads = [...uploads, upload];
-    return upload;
-  } catch {
-    return null;
-  }
-}
-
-export async function removeUpload(id: string): Promise<boolean> {
-  try {
-    await run("readwrite", (store) => store.delete(id));
-    const gone = uploads.find((upload) => upload.id === id);
-    if (gone) URL.revokeObjectURL(gone.url);
-    uploads = uploads.filter((upload) => upload.id !== id);
-    return true;
-  } catch {
-    return false;
   }
 }

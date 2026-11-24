@@ -1,9 +1,8 @@
 /**
- * On localhost, each deck page has a folder under presentation/project 1/pages.
+ * On localhost, each deck page has a folder under presentation/<project dir>/pages.
  * Images and videos already on the page are copied there.
  * A file that is not on the page yet is loaded and placed like a type 3 frame.
  */
-import { CONFERENCE_SRC_PREFIX } from "../shared/conference.ts";
 import {
   PAGE_FILES_EVENT,
   PRESENTATION_PROJECT_ROUTE,
@@ -13,7 +12,7 @@ import {
   presentationProjectEnabled,
 } from "../shared/presentation-files.ts";
 import type { PresentationDeck, PresentationPage } from "../shared/presentation.ts";
-import { SLIDE_H, SLIDE_W } from "../shared/presentation.ts";
+import { pageAssetKeys, SLIDE_H, SLIDE_W } from "../shared/presentation.ts";
 import {
   clampImageOffset,
   clampImageWidth,
@@ -29,6 +28,8 @@ export type PageFileSource = { src: string; url: string; thumb: string; label: s
 const seen = new Set<string>();
 let pending = Promise.resolve();
 let lastListing: Listing | null = null;
+/** Project the listing belongs to. */
+let listedProject = "";
 
 export function isPageMedia(file: File): boolean {
   if (file.type.startsWith("image/") || file.type.startsWith("video/")) return true;
@@ -39,7 +40,7 @@ function sourcesOf(pageId: string): PageFileSource[] {
   const files = lastListing?.pages?.find((page) => page.id === pageId)?.files ?? [];
   return files.flatMap((file) => {
     const src = presentationFileSrc(pageId, file.name);
-    const url = presentationFileUrl(src);
+    const url = presentationFileUrl(src, listedProject);
     if (!url) return [];
     return [{ src, url, thumb: url, label: file.name, kind: file.kind === "video" ? "video" as const : "theme" as const }];
   });
@@ -49,7 +50,8 @@ function publish(pageId: string): void {
   document.dispatchEvent(new CustomEvent<PageFileSource[]>(PAGE_FILES_EVENT, { detail: sourcesOf(pageId) }));
 }
 
-function remember(pageId: string, files: { name: string; kind: "image" | "video" }[]): void {
+function remember(projectId: string, pageId: string, files: { name: string; kind: "image" | "video" }[]): void {
+  if (projectId !== listedProject) return;
   const pages = lastListing?.pages ?? [];
   let page = pages.find((item) => item.id === pageId);
   if (!page) {
@@ -62,19 +64,6 @@ function remember(pageId: string, files: { name: string; kind: "image" | "video"
     if (!page.files.some((item) => item.name === file.name)) page.files.push({ name: file.name, kind: file.kind, placed: true });
   }
   publish(pageId);
-}
-
-function assetKeys(page: PresentationPage): string[] {
-  const keys: string[] = [];
-  const add = (key: string) => {
-    if (key && !keys.includes(key)) keys.push(key);
-  };
-  for (const layer of page.state.layers) {
-    if (layer.kind === "image" && layer.src.startsWith(CONFERENCE_SRC_PREFIX)) add(layer.src);
-  }
-  const background = page.state.background;
-  if (background?.id && !background.file) add(`${background.mode === "video" ? "bgv" : "bg"}:${background.id}`);
-  return keys;
 }
 
 /** Type 3 agenda slots for up to three pictures, and the mosaic for four. */
@@ -140,20 +129,20 @@ function layerInsertAt(page: PresentationPage): number {
   return at;
 }
 
-async function placeFresh(deck: PresentationDeck, listing: Listing): Promise<{ id: string; names: string[] }[]> {
+async function placeFresh(projectId: string, deck: PresentationDeck, listing: Listing): Promise<{ id: string; names: string[] }[]> {
   const placed: { id: string; names: string[] }[] = [];
   for (const item of listing.pages ?? []) {
     if (!item?.id || !Array.isArray(item.files)) continue;
     const page = deck.pages.find((candidate) => candidate.id === item.id);
     if (!page) continue;
     const names: string[] = [];
-    const images = item.files.filter((file) => file.kind === "image" && !file.placed && !seen.has(`${page.id}/${file.name}`));
+    const images = item.files.filter((file) => file.kind === "image" && !file.placed && !seen.has(`${projectId}/${page.id}/${file.name}`));
     const slots = type3Slots(images.length);
     const layers: ImageLayer[] = [];
     for (const [index, file] of images.entries()) {
-      const key = `${page.id}/${file.name}`;
+      const key = `${projectId}/${page.id}/${file.name}`;
       const src = presentationFileSrc(page.id, file.name);
-      const url = presentationFileUrl(src);
+      const url = presentationFileUrl(src, projectId);
       const slot = slots[index];
       if (!url || !slot) continue;
       seen.add(key);
@@ -179,9 +168,9 @@ async function placeFresh(deck: PresentationDeck, listing: Listing): Promise<{ i
       page.state.layers.splice(layerInsertAt(page), 0, ...layers);
       page.thumb = "";
     }
-    const video = item.files.find((file) => file.kind === "video" && !file.placed && !seen.has(`${page.id}/${file.name}`));
+    const video = item.files.find((file) => file.kind === "video" && !file.placed && !seen.has(`${projectId}/${page.id}/${file.name}`));
     if (video && page.state.background?.mode !== "video" && !page.state.background?.file) {
-      seen.add(`${page.id}/${video.name}`);
+      seen.add(`${projectId}/${page.id}/${video.name}`);
       page.state.background = { id: page.state.background?.id || "slide", mode: "video", file: presentationFileSrc(page.id, video.name) };
       page.thumb = "";
       names.push(video.name);
@@ -191,20 +180,21 @@ async function placeFresh(deck: PresentationDeck, listing: Listing): Promise<{ i
   return placed;
 }
 
-async function applyProject(deck: PresentationDeck, onChange: () => void): Promise<void> {
+async function applyProject(projectId: string, deck: PresentationDeck, onChange: () => void): Promise<void> {
   const response = await fetch(PRESENTATION_PROJECT_ROUTE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pages: deck.pages.map((page) => ({ id: page.id, copy: assetKeys(page) })) }),
+    body: JSON.stringify({ project: projectId, pages: deck.pages.map((page) => ({ id: page.id, copy: pageAssetKeys(page) })) }),
   });
   if (!response.ok) return;
   lastListing = (await response.json()) as Listing;
-  const placed = await placeFresh(deck, lastListing);
+  listedProject = projectId;
+  const placed = await placeFresh(projectId, deck, lastListing);
   if (placed.length) {
     const marked = await fetch(PRESENTATION_PROJECT_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ placed }),
+      body: JSON.stringify({ project: projectId, placed }),
     });
     if (!marked.ok) return;
     onChange();
@@ -214,18 +204,18 @@ async function applyProject(deck: PresentationDeck, onChange: () => void): Promi
 }
 
 /** Removes one image or video from the open page's folder and from the control panel. */
-export async function removePageFile(pageId: string, name: string): Promise<string[] | null> {
+export async function removePageFile(projectId: string, pageId: string, name: string): Promise<string[] | null> {
   const run = pending.then(async () => {
     const response = await fetch(PRESENTATION_PROJECT_ROUTE, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remove: { id: pageId, name } }),
+      body: JSON.stringify({ project: projectId, remove: { id: pageId, name } }),
     });
     if (!response.ok) return null;
     const body = (await response.json()) as { keys?: unknown };
     const keys = Array.isArray(body.keys) ? body.keys.filter((key): key is string => typeof key === "string") : [];
-    seen.delete(`${pageId}/${name}`);
-    const page = lastListing?.pages?.find((item) => item.id === pageId);
+    seen.delete(`${projectId}/${pageId}/${name}`);
+    const page = projectId === listedProject ? lastListing?.pages?.find((item) => item.id === pageId) : undefined;
     if (page?.files) {
       page.files = page.files.filter((file) => file.name !== name);
       publish(pageId);
@@ -238,6 +228,7 @@ export async function removePageFile(pageId: string, name: string): Promise<stri
 
 /** Saves images and videos into the open page's folder and shows them in the control panel. */
 export async function uploadPageFiles(
+  projectId: string,
   pageId: string,
   files: File[],
 ): Promise<{ name: string; src: string; kind: "image" | "video" }[]> {
@@ -245,7 +236,7 @@ export async function uploadPageFiles(
     const saved: { name: string; src: string; kind: "image" | "video" }[] = [];
     for (const file of files) {
       const response = await fetch(
-        `${PRESENTATION_UPLOAD_ROUTE}?page=${encodeURIComponent(pageId)}&name=${encodeURIComponent(file.name)}`,
+        `${PRESENTATION_UPLOAD_ROUTE}?project=${encodeURIComponent(projectId)}&page=${encodeURIComponent(pageId)}&name=${encodeURIComponent(file.name)}`,
         { method: "POST", body: file },
       );
       if (!response.ok) continue;
@@ -253,15 +244,19 @@ export async function uploadPageFiles(
       if (typeof body.name !== "string" || (body.kind !== "image" && body.kind !== "video")) continue;
       saved.push({ name: body.name, src: presentationFileSrc(pageId, body.name), kind: body.kind });
     }
-    if (saved.length) remember(pageId, saved);
+    if (saved.length) remember(projectId, pageId, saved);
     return saved;
   });
   pending = run.then(() => undefined).catch(() => undefined);
   return run;
 }
 
-/** Creates, renames, and deletes page folders so they match the deck. Localhost only. */
-export function syncPresentationProject(deck: PresentationDeck, onChange: () => void): void {
-  if (!presentationProjectEnabled() || deck.pages.length === 0) return;
-  pending = pending.then(() => applyProject(deck, onChange)).catch(() => undefined);
+/** Creates, renames, and deletes the project's page folders so they match its deck. Localhost only. */
+export function syncPresentationProject(projectId: string, deck: PresentationDeck, onChange: () => void): void {
+  if (!presentationProjectEnabled() || !projectId || deck.pages.length === 0) return;
+  if (projectId !== listedProject) {
+    lastListing = null;
+    listedProject = projectId;
+  }
+  pending = pending.then(() => applyProject(projectId, deck, onChange)).catch(() => undefined);
 }

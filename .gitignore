@@ -1,12 +1,6 @@
 node_modules/
 dist/
-dist-internal/
-dist-public/
-reports/
 *.local
 .env
 .env.*
 .DS_Store
-
-# Over the Git 100MB limit; the _compressed copy is committed instead.
-phase 2-resources/\[Graphic_Resources\]/03_Slide/Slide_16x9_3840x2160.mp4

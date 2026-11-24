@@ -1,5 +1,4 @@
 import { assetUrl, escapeHtml } from "../lib/dom.ts";
-import { hrefFor } from "../router.ts";
 import { PAGE_ENTER_EVENT, PAGE_FILES_EVENT, PRESENT_LAYOUT_EVENT, presentationFileUrl } from "../shared/presentation-files.ts";
 import { isPageMedia, removePageFile, uploadPageFiles, type PageFileSource } from "./presentation-project.ts";
 import type { CaptureRecord } from "../shared/index-types.ts";
@@ -26,7 +25,6 @@ import {
   placeholderLayer,
   isMotionSrc,
   isUploadSrc,
-  UPLOAD_PREFIX,
   isVideoSrc,
   mediaPlayOf,
   TEXT_ALIGNS,
@@ -98,31 +96,23 @@ import {
   type ShiftAxis,
   type StudioDocumentInput,
   type StudioLayer,
+  type StudioPreset,
   type StudioRect,
   type StudioState,
   type TextAlign,
   type TextKind,
   type TextLayer,
 } from "../shared/studio.ts";
-import { STUDIO_PRESETS, type StudioPreset } from "../shared/studio-presets.ts";
 import {
   CONFERENCE_PRESETS,
-  DEFAULT_CONFERENCE_PRESET_ID,
   conferenceSrc,
-  printSize,
-  applySpeakerOrder,
-  instagramDeck,
-  replaceSpeakerSrc,
-  speakerSrcOf,
   videoExportSizes,
   type ConferenceBackground,
   type ConferenceIndex,
 } from "../shared/conference.ts";
-import { readInstagramCard, readInstagramOrder, readStoredConferenceBaseline, writeInstagramCard, writeInstagramOrder } from "../studio-baseline.ts";
 import { cardPdf } from "../shared/card-pdf.ts";
 import type { SceneColor, SceneGeometry, SceneItem, ScenePathCmd, SceneVideo, SlideScene } from "../shared/slides-pptx.ts";
 import { GIF_LONG_EDGE, createGifEncoder, gifFrameDelays, gifSize } from "../shared/card-gif.ts";
-import { createPngEncoder, printStrips } from "../shared/print-png.ts";
 import {
   BLEND_LABELS,
   LAYER_BLUR_MAX,
@@ -181,15 +171,7 @@ import {
 } from "../shared/studio-shapes.ts";
 import { confirmProceed, FIGMA_PAGE_URL_KEY, openFigmaMcpDialog, showToast } from "../feedback.ts";
 import { FIGMA_IMAGE_MAX, FIGMA_NOT_CONNECTED, figmaBridgeReady, parseFigmaPageUrl, sendCardToFigma } from "../shared/figma-bridge.ts";
-import thumbIgFeedSquare from "../styles/presets/ig-feed-square.webp";
-import thumbIgFeedPortrait from "../styles/presets/ig-feed-portrait.webp";
-import thumbIgStory from "../styles/presets/ig-story.webp";
-import thumbFbFeed from "../styles/presets/fb-feed.webp";
-import thumbFbCover from "../styles/presets/fb-cover.webp";
-import thumbYtThumbnail from "../styles/presets/yt-thumbnail.webp";
-import thumbYtBanner from "../styles/presets/yt-banner.webp";
-import thumbYtShorts from "../styles/presets/yt-shorts.webp";
-import { addUpload, getUploads, removeUpload, uploadBySrc, uploadSrc } from "../studio-uploads.ts";
+import { uploadBySrc } from "../studio-uploads.ts";
 
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
@@ -211,16 +193,6 @@ let gestureZoom = 1;
 let commitOpenGesture: (() => void) | null = null;
 /** Online Studio and Conference each keep their own undo history. */
 let historyOwner = "";
-/** Instagram speaker copies. Kept across rebinds so arrows remember the current card. */
-type SpeakerDeck = { index: number; srcs: string[]; slides: StudioState[] };
-let speakerDeck: SpeakerDeck | null = null;
-/** keep copies live edits back; apply restores a slide; reset rewrites the current slide from the shared baseline. */
-let speakerDeckMode: "keep" | "apply" | "reset" = "keep";
-
-export function clearSpeakerDeck(): void {
-  speakerDeck = null;
-  speakerDeckMode = "keep";
-}
 const histories = new Map<string, { undo: StudioState[]; redo: StudioState[]; undoZoom: number[]; redoZoom: number[] }>();
 
 function useHistory(owner: string): void {
@@ -452,28 +424,9 @@ function stopMotion(): void {
   motionSkip.clear();
 }
 
-type Device = "mobile" | "tablet" | "desktop";
-const DEVICES: { id: Device; label: string; icon: string }[] = [
-  {
-    id: "mobile",
-    label: "모바일 뷰",
-    icon: `<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2.5h8a1.5 1.5 0 0 1 1.5 1.5v16a1.5 1.5 0 0 1-1.5 1.5H8A1.5 1.5 0 0 1 6.5 20V4A1.5 1.5 0 0 1 8 2.5Z"/><path d="M11 18.5h2"/></svg>`,
-  },
-  {
-    id: "tablet",
-    label: "타블렛 뷰",
-    icon: `<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 2.5h13A1.5 1.5 0 0 1 20 4v16a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20V4a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M10.5 18.5h3"/></svg>`,
-  },
-  {
-    id: "desktop",
-    label: "데스크탑 뷰",
-    icon: `<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 4h17A1.5 1.5 0 0 1 22 5.5v10a1.5 1.5 0 0 1-1.5 1.5h-17A1.5 1.5 0 0 1 2 15.5v-10A1.5 1.5 0 0 1 3.5 4Z"/><path d="M8.5 21h7M12 17v4"/></svg>`,
-  },
-];
 const TABLET_QUERY = "(min-width: 768px)";
 const DESKTOP_QUERY = "(min-width: 1025px)";
 const PRESENTATION_CONTROLS_KEY = "ax-presentation-controls";
-let studioDevice: Device | null = null;
 
 function presentationControlsOpen(): boolean {
   try {
@@ -504,30 +457,8 @@ export function pageClipIsCurrent(): boolean {
 const LONG_PRESS_MS = 500;
 const PASTE_OFFSET = 20;
 
-function largestDevice(): Device {
-  if (window.matchMedia(DESKTOP_QUERY).matches) return "desktop";
-  if (window.matchMedia(TABLET_QUERY).matches) return "tablet";
-  return "mobile";
-}
-
-/** The chosen device, stepped down when the window is too narrow to show it. */
-function activeDevice(): Device {
-  const order: Device[] = ["mobile", "tablet", "desktop"];
-  const max = largestDevice();
-  if (!studioDevice) return max;
-  return order.indexOf(studioDevice) <= order.indexOf(max) ? studioDevice : max;
-}
-
 function cloneStudio(state: StudioState): StudioState {
   return structuredClone(state);
-}
-
-function replaceStudio(state: StudioState, next: StudioState): void {
-  const controlsWidth = state.controlsWidth;
-  const panel = state.panel;
-  assignStudio(state, structuredClone(next));
-  state.controlsWidth = controlsWidth;
-  state.panel = panel;
 }
 
 function sameStudio(a: StudioState, b: StudioState): boolean {
@@ -862,7 +793,7 @@ function studioSources(state: StudioState, config: StudioConfig): { srcUrl: (src
   const srcUrl = (src: string): string => {
     const upload = uploadBySrc(src);
     if (upload) return upload.url;
-    const media = presentationFileUrl(src);
+    const media = presentationFileUrl(src, config.project);
     if (media) return media;
     const source =
       sources.find((item) => item.src === src) ??
@@ -873,7 +804,7 @@ function studioSources(state: StudioState, config: StudioConfig): { srcUrl: (src
   };
   const record =
     (state.background && config.conference?.backgrounds.find((item) => item.id === state.background?.id)) || null;
-  const fileUrl = state.background?.file ? presentationFileUrl(state.background.file) : null;
+  const fileUrl = state.background?.file ? presentationFileUrl(state.background.file, config.project) : null;
   const still = fileUrl && state.background?.mode !== "video" ? fileUrl : record?.image?.path ? assetUrl(record.image.path) : "";
   const videoUrl = state.background?.mode === "video" ? fileUrl || (record?.video?.path ? assetUrl(record.video.path) : "") : "";
   return { srcUrl, still, videoUrl };
@@ -897,9 +828,9 @@ export function studioImagesReady(state: StudioState, config: StudioConfig): boo
 }
 
 /** Paints a page the way the editor canvas does, then returns a preview image. */
-export async function renderStudioStill(state: StudioState, config: StudioConfig): Promise<string> {
+export async function renderStudioStill(state: StudioState, config: StudioConfig, type = "image/jpeg"): Promise<string> {
   const canvas = await paintStill(state, config, 960);
-  return canvas.toDataURL("image/jpeg", 0.9);
+  return canvas.toDataURL(type, 0.9);
 }
 
 /** Design-system tokens offered beside every color field. bg and fg differ between light and dark mode. */
@@ -1738,17 +1669,6 @@ function namedPasteFile(file: File, index: number): File | null {
   if (!ext) return null;
   return new File([file], `paste-${Date.now().toString(36)}-${index}.${ext}`, { type: file.type });
 }
-const PRESET_SHAPE = 56;
-const PRESET_THUMBS: Record<string, string> = {
-  "ig-feed-square": thumbIgFeedSquare,
-  "ig-feed-portrait": thumbIgFeedPortrait,
-  "ig-story": thumbIgStory,
-  "fb-feed": thumbFbFeed,
-  "fb-cover": thumbFbCover,
-  "yt-thumbnail": thumbYtThumbnail,
-  "yt-banner": thumbYtBanner,
-  "yt-shorts": thumbYtShorts,
-};
 const STEP = 2;
 const STEP_SHIFT = 10;
 const DRAW_TOOLS = [
@@ -1864,39 +1784,19 @@ export type StudioSource = { src: string; url: string; thumb: string; label: str
 export type StudioSourceGroup = { id: string; label: string; items: StudioSource[]; hidden?: boolean };
 /** What differs between Online Studio and Conference. The editor itself is shared. */
 export type StudioConfig = {
-  id: "studio" | "conference" | "presentation";
+  id: "presentation";
   /** Undo stack id. Presentation uses one stack per page. */
   historyKey?: string;
   /** Presentation page whose folder fills the control panel. */
   pageId?: string;
+  /** Presentation project whose page folders hold the page files (pres: sources). */
+  project?: string;
   presets: readonly StudioPreset[];
-  presetThumbs: Record<string, string>;
   groups: StudioSourceGroup[];
   conference: ConferenceIndex | null;
 };
 
-export function onlineStudioConfig(captures: CaptureRecord[]): StudioConfig {
-  return {
-    id: "studio",
-    presets: STUDIO_PRESETS,
-    presetThumbs: PRESET_THUMBS,
-    groups: [
-      {
-        id: "theme",
-        label: "아카이브 테마",
-        items: captures.map((capture) => ({
-          src: capture.slug,
-          url: assetUrl(capture.asset.path),
-          thumb: assetUrl(capture.asset.thumbPath ?? capture.asset.path),
-          label: capture.title,
-          kind: "theme",
-        })),
-      },
-    ],
-    conference: null,
-  };
-}
-
+/** The Slide size and the conference speakers and logos as sources, which conf: layers read. */
 export function conferenceStudioConfig(index: ConferenceIndex): StudioConfig {
   const source = (kind: StudioSource["kind"]) => (item: ConferenceIndex["speakers"][number]): StudioSource => ({
     src: conferenceSrc(item),
@@ -1905,15 +1805,9 @@ export function conferenceStudioConfig(index: ConferenceIndex): StudioConfig {
     label: item.label,
     kind,
   });
-  const thumbs: Record<string, string> = {};
-  for (const preset of CONFERENCE_PRESETS) {
-    const thumb = index.backgrounds.find((item) => item.id === preset.background)?.thumbPath;
-    if (thumb) thumbs[preset.id] = assetUrl(thumb);
-  }
   return {
-    id: "conference",
+    id: "presentation",
     presets: CONFERENCE_PRESETS,
-    presetThumbs: thumbs,
     groups: [
       { id: "speaker", label: "Speecher", items: index.speakers.map(source("speaker")) },
       { id: "logo", label: "SVG", items: index.logos.map(source("logo")) },
@@ -2010,14 +1904,6 @@ function sourceButton(
 function themeOptions(config: StudioConfig, activeSrc: string): string {
   const option = (src: string, image: string, label: string, kind: StudioSource["kind"] = "theme") =>
     sourceButton(src, image, label, activeSrc, kind);
-  const uploads = config.id === "presentation" ? [] : getUploads().map(
-    (upload) => `
-      <div class="studio__theme-item">
-        ${option(uploadSrc(upload), upload.url, upload.name)}
-        <button type="button" class="studio__theme-remove" data-upload-remove="${escapeHtml(upload.id)}" aria-label="${escapeHtml(upload.name)} 삭제" title="삭제">×</button>
-      </div>
-    `,
-  );
   const add = `<button type="button" class="studio__theme studio__theme--add" id="studio-theme-add" aria-label="이미지 추가" title="이미지 추가">+</button>`;
   const visible = config.groups.filter((group) => !group.hidden);
   return visible
@@ -2028,7 +1914,7 @@ function themeOptions(config: StudioConfig, activeSrc: string): string {
       return `
           <div class="studio__field">
             <span id="${labelId}">${escapeHtml(group.label)}</span>
-            <div class="studio__themes" role="radiogroup" aria-labelledby="${labelId}">${[...items, ...(last ? [...uploads, add] : [])].join("")}</div>
+            <div class="studio__themes" role="radiogroup" aria-labelledby="${labelId}">${[...items, ...(last ? [add] : [])].join("")}</div>
           </div>`;
     })
     .join("");
@@ -2048,21 +1934,7 @@ function libraryOptions(activeSrc: string): string {
 const pauseIcon = `<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14"/><path d="M16 5v14"/></svg>`;
 const playIcon = `<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg>`;
 
-function hasSources(config: StudioConfig): boolean {
-  if (config.id === "presentation") return true;
-  return config.groups.some((group) => group.items.length > 0);
-}
-
 export function renderStudio(state: StudioState, config: StudioConfig): string {
-  if (!hasSources(config)) {
-    return `
-      <section class="state-panel state-panel--soft">
-        <h1 class="state-panel__title">Archive is empty</h1>
-        <p class="state-panel__text">스튜디오에서 쓸 아카이브 작업물이 없습니다.</p>
-      </section>
-    `;
-  }
-
   const blankInk = rgbToHex(0, 0, 0);
   const gradientControls = (prefix: string, label: string) => `
             <button type="button" class="studio__style-btn studio__style-btn--wide" id="${prefix}-gradient-toggle" aria-pressed="false">그라데이션</button>
@@ -2105,25 +1977,8 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
   const title = firstLayer(state, "title") ?? placeholderLayer(state, "title");
   const body = firstLayer(state, "body") ?? placeholderLayer(state, "body");
   const image = firstLayer(state, "image") ?? placeholderLayer(state, "image");
-  const preset = config.presets.find((item) => item.id === state.presetId) ?? config.presets[0]!;
-  const presets = config.presets.map((item) => {
-    const selected = item.id === preset.id;
-    const scale = PRESET_SHAPE / Math.max(item.width, item.height);
-    const shapeWidth = (item.width * scale).toFixed(2);
-    const shapeHeight = (item.height * scale).toFixed(2);
-    const thumb = config.presetThumbs[item.id];
-    const shape = thumb
-      ? `<img class="studio__preset-shape" alt="" src="${escapeHtml(thumb)}" style="width:${shapeWidth}px;height:${shapeHeight}px">`
-      : `<span class="studio__preset-shape" style="width:${shapeWidth}px;height:${shapeHeight}px"></span>`;
-    return `
-      <button type="button" class="studio__preset" role="radio" data-preset-id="${escapeHtml(item.id)}" aria-checked="${selected ? "true" : "false"}" tabindex="${selected ? "0" : "-1"}">
-        <span class="studio__preset-frame" style="width:${PRESET_SHAPE}px" aria-hidden="true">${shape}</span>
-        <span class="studio__preset-name">${escapeHtml(item.name)}</span>
-        <span class="studio__preset-size">${item.width}×${item.height}</span>
-      </button>`;
-  }).join("");
   const themes = themeOptions(config, image.src);
-  const showAssets = (config.id === "conference" || config.id === "presentation") && graphicLibrary.length > 0;
+  const showAssets = graphicLibrary.length > 0;
   const assetsPanel = showAssets
     ? `<div id="studio-panel-assets" role="tabpanel" aria-labelledby="studio-tab-assets" hidden>
           <div class="studio__field">
@@ -2157,23 +2012,8 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
   const conferenceActions = config.conference
     ? `
             <button type="button" class="studio__zoom-btn" id="studio-video-toggle" aria-label="일시정지" title="일시정지" hidden>${pauseIcon}</button>
-            <button type="button" class="button button--secondary" id="studio-print" hidden>인쇄용 PNG</button>
             <button type="button" class="button button--secondary" id="studio-video" hidden>동영상</button>
             <button type="button" class="button button--secondary" id="studio-gif" hidden title="동영상 한 바퀴를 GIF로 받습니다. 재생이 반복이면 GIF도 반복되고, 1회면 한 번만 재생됩니다. 긴 변은 ${GIF_LONG_EDGE}px까지입니다.">GIF 다운로드</button>`
-    : "";
-  const showSpeakerNav =
-    config.id === "conference" && state.presetId === DEFAULT_CONFERENCE_PRESET_ID && (config.conference?.speakers.length ?? 0) > 1;
-  const speakerNav = showSpeakerNav
-    ? `
-          <button type="button" class="studio__zoom-btn studio__speaker-btn studio__speaker-btn--prev" id="studio-speaker-prev" aria-label="이전 연사"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6 8.5 12l6 6"/></svg></button>
-          <button type="button" class="studio__zoom-btn studio__speaker-btn studio__speaker-btn--next" id="studio-speaker-next" aria-label="다음 연사"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg></button>`
-    : "";
-  const speakerCount = showSpeakerNav ? `<p class="studio__speaker-count" id="studio-speaker-count"></p>` : "";
-  const speakerOrder = showSpeakerNav
-    ? `<div class="studio__order" id="studio-speaker-order">
-          <p class="studio__order-label">카드 순서</p>
-          <div class="studio__order-list" id="studio-speaker-order-list" aria-label="인스타그램 카드 순서"></div>
-        </div>`
     : "";
   const designSelected = state.panel === "design";
   const fonts = fontChoices();
@@ -2189,43 +2029,29 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
   const undoIcon = `<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>`;
   const redoIcon = `<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>`;
 
-  const presentation = config.id === "presentation";
-  const device = presentation ? "desktop" : activeDevice();
-  const deviceButtons = DEVICES.map(
-    (item) =>
-      `<button type="button" class="studio__zoom-btn studio-devices__btn" data-device="${item.id}" aria-label="${item.label}" title="${item.label}" aria-pressed="${item.id === device ? "true" : "false"}">${item.icon}</button>`,
-  ).join("");
-  const controlsOpen = !presentation || presentationControlsOpen();
+  const controlsOpen = presentationControlsOpen();
   const drawButtons = DRAW_TOOLS.map(
     (tool) =>
       `<button type="button" class="studio__draw-btn" data-draw="${tool.id}" aria-label="${tool.label}" title="${tool.label}"${tool.id === "select" ? ' aria-pressed="true"' : tool.id === "pen" ? ' aria-pressed="false"' : ""}>${drawIcon(tool.path)}</button>`,
   ).join("");
   const alignBar = `
-        <div class="studio__align" id="studio-align" role="toolbar" aria-label="도형과 정렬"${presentation ? "" : " hidden"}>
-          ${presentation ? `<div class="studio__draw" role="group" aria-label="도형">${drawButtons}</div><span class="studio__align-divider" aria-hidden="true"></span>` : ""}
+        <div class="studio__align" id="studio-align" role="toolbar" aria-label="도형과 정렬">
+          <div class="studio__draw" role="group" aria-label="도형">${drawButtons}</div><span class="studio__align-divider" aria-hidden="true"></span>
           ${LAYER_ALIGNS.map(layerAlignButton).join("")}
           <span class="studio__align-divider" aria-hidden="true"></span>
           ${LAYER_DISTRIBUTES.map(layerAlignButton).join("")}
           <span class="studio__align-divider" id="studio-image-adjust-divider" hidden></span>
           <button type="button" class="studio__zoom-btn" id="studio-image-adjust-btn" aria-label="이미지 수정" title="이미지 수정" aria-pressed="false" hidden><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M9 4v4M15 10v4M8 16v4"/></svg></button>
-          ${presentation ? `<span class="studio__align-divider" aria-hidden="true"></span><button type="button" class="studio__zoom-btn" id="studio-add-page" aria-label="페이지 추가" title="페이지 추가"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button><button type="button" class="studio__zoom-btn" id="studio-deck-export" aria-label="전체 다운로드" title="전체 다운로드"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 19h14"/></svg></button><span class="studio__align-divider" aria-hidden="true"></span><button type="button" class="studio__zoom-btn" id="studio-present" aria-label="프레젠테이션" title="프레젠테이션"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5"/><path d="M15 4h5v5"/><path d="M20 15v5h-5"/><path d="M9 20H4v-5"/></svg></button>` : ""}
+          <span class="studio__align-divider" aria-hidden="true"></span><button type="button" class="studio__zoom-btn" id="studio-add-page" aria-label="페이지 추가" title="페이지 추가"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button><button type="button" class="studio__zoom-btn" id="studio-deck-export" aria-label="전체 다운로드" title="전체 다운로드"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 19h14"/></svg></button><span class="studio__align-divider" aria-hidden="true"></span><button type="button" class="studio__zoom-btn" id="studio-present" aria-label="프레젠테이션" title="프레젠테이션"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5"/><path d="M15 4h5v5"/><path d="M20 15v5h-5"/><path d="M9 20H4v-5"/></svg></button>
         </div>`;
-  const panelToggle = presentation
-    ? `<button type="button" class="studio__panel-toggle" id="studio-panel-toggle" aria-expanded="${controlsOpen ? "true" : "false"}" aria-controls="studio-controls" aria-label="${controlsOpen ? "컨트롤 패널 접기" : "컨트롤 패널 펼치기"}" title="${controlsOpen ? "컨트롤 패널 접기" : "컨트롤 패널 펼치기"}"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6 8.5 12l6 6"/></svg></button>`
-    : "";
+  const panelToggle = `<button type="button" class="studio__panel-toggle" id="studio-panel-toggle" aria-expanded="${controlsOpen ? "true" : "false"}" aria-controls="studio-controls" aria-label="${controlsOpen ? "컨트롤 패널 접기" : "컨트롤 패널 펼치기"}" title="${controlsOpen ? "컨트롤 패널 접기" : "컨트롤 패널 펼치기"}"><svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6 8.5 12l6 6"/></svg></button>`;
 
   return `
     <div class="studio-view">
-    ${
-      presentation
-        ? `<div class="studio-devices studio-devices--tools">${alignBar}</div>`
-        : `<div class="studio-devices"><div class="studio-devices__group" role="group" aria-label="디바이스 뷰">${deviceButtons}</div>${
-            config.id === "conference" ? `<a class="button button--secondary studio-devices__review" href="${hrefFor({ name: "review" })}">행사 후기</a>` : ""
-          }</div>`
-    }
+    <div class="studio-devices studio-devices--tools">${alignBar}</div>
     <div class="studio-device-frame">
-    <div class="studio-device" id="studio-device" data-device="${device}" data-framed="${presentation || device === largestDevice() ? "false" : "true"}">
-    <section class="studio"${presentation ? ` data-controls="${controlsOpen ? "open" : "closed"}"` : ""} style="--studio-controls-width:${state.controlsWidth}px">
+    <div class="studio-device" id="studio-device" data-device="desktop" data-framed="false">
+    <section class="studio" data-controls="${controlsOpen ? "open" : "closed"}" style="--studio-controls-width:${state.controlsWidth}px">
       <div class="studio__controls-wrap">
       <form class="studio__controls" id="studio-controls">
         <div class="studio__tabs" role="tablist" aria-label="컨트롤 패널">
@@ -2236,9 +2062,7 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
         <div class="studio__panel-host">
         <div class="studio__panel-scroll" id="studio-panel-scroll">
         <div id="studio-panel-design" role="tabpanel" aria-labelledby="studio-tab-design"${designSelected ? "" : " hidden"}>
-          ${
-            presentation
-              ? `<div class="studio__field" id="studio-enter-field" hidden>
+          <div class="studio__field" id="studio-enter-field" hidden>
             <span id="studio-enter-label">블러로 나타나기</span>
             <div class="studio__text-style" role="group" aria-labelledby="studio-enter-label">
               <button type="button" class="studio__style-btn studio__style-btn--wide" id="studio-enter-once" aria-pressed="false">1회</button>
@@ -2251,26 +2075,8 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
               <button type="button" class="studio__style-btn studio__style-btn--wide" id="studio-motion-once" aria-pressed="false">1회</button>
               <button type="button" class="studio__style-btn studio__style-btn--wide" id="studio-motion-loop" aria-pressed="false">반복</button>
             </div>
-          </div>`
-              : ""
-          }
-          ${
-            config.presets.length > 1
-              ? `<div class="studio__field">
-            <span id="studio-preset-label">카드 크기 프리셋</span>
-            <div class="studio__presets" role="radiogroup" aria-labelledby="studio-preset-label">${presets}</div>
-          </div>`
-              : ""
-          }${backgroundField}
-          ${
-            presentation
-              ? ""
-              : `<div class="studio__field">
-            <span id="studio-draw-label">도형</span>
-            <div class="studio__draw" role="group" aria-labelledby="studio-draw-label">${drawButtons}</div>
-            <p class="studio__hint">원, 사각형, 삼각형, 별, 선, 펜, 텍스트로 카드에 형태를 더합니다.</p>
-          </div>`
-          }
+          </div>
+          ${backgroundField}
           <div class="studio__field" id="studio-shape-size-field" hidden>
             <label for="studio-shape-size">도형 크기</label>
             <div class="studio__radius">
@@ -2551,12 +2357,8 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
               <input id="studio-radius-number" class="studio__control studio__control--number" type="number" min="${RADIUS_MIN}" max="${RADIUS_MAX}" step="1" value="${state.radius}" aria-label="카드 radius 수치" />
             </div>
           </div>
-          ${presentation
-            ? `<button type="button" class="button button--secondary studio__reset" id="studio-set-page-default">단일 페이지 현상태 기본값으로 세팅</button>
-          <button type="button" class="button button--secondary studio__reset" id="studio-set-deck-default">전체 페이지 현상태 기본값으로 세팅</button>`
-            : `<button type="button" class="button button--secondary studio__reset" id="studio-reset">초기화</button>
-          <button type="button" class="button button--secondary studio__reset" id="studio-set-baseline">초기화로 세팅</button>
-          <button type="button" class="button button--secondary studio__reset" id="studio-save-library">그래픽 라이브러리에 추가</button>`}
+          <button type="button" class="button button--secondary studio__reset" id="studio-set-page-default">단일 페이지 현상태 기본값으로 세팅</button>
+          <button type="button" class="button button--secondary studio__reset" id="studio-set-deck-default">전체 페이지 현상태 기본값으로 세팅</button>
         </div>
 
         <div id="studio-panel-code" role="tabpanel" aria-labelledby="studio-tab-code"${designSelected ? " hidden" : ""}>
@@ -2576,7 +2378,6 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
       <div class="studio__splitter" id="studio-splitter" role="separator" aria-orientation="vertical" aria-label="컨트롤 패널과 프리뷰 너비" aria-valuemin="${CONTROLS_MIN}" aria-valuenow="${state.controlsWidth}" tabindex="0">${panelToggle}</div>
 
       <div class="studio__preview">
-        ${presentation ? "" : alignBar}
         <div class="studio__stage" id="studio-stage">
           <p class="studio__loading" id="studio-loading" role="status" hidden>이미지를 로딩중입니다...</p>
           <div class="studio__stage-frame">
@@ -2604,12 +2405,9 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
               </div>
             </div>
           </div>
-          ${speakerNav}
         </div>
-        ${speakerOrder}
         <div class="studio__bar">
           <p class="studio__meta" id="studio-meta" aria-live="polite"></p>
-          ${speakerCount}
           <div class="studio__bar-actions">
             <div class="studio__history" role="group" aria-label="편집 기록">
               <button type="button" class="studio__zoom-btn" id="studio-undo" aria-label="이전 동작" disabled>${undoIcon}</button>
@@ -2642,13 +2440,7 @@ export function bindStudio(
   state: StudioState,
   config: StudioConfig,
   actions: {
-    /** Studio and Conference only, like onSetBaseline and onAddToLibrary. */
-    onReset?: () => void;
-    onSetBaseline?: () => void;
-    /** Loads the preset's saved baseline and re-renders. False when it has none. */
-    onLoadPreset: (presetId: string) => boolean;
-    onAddToLibrary?: (thumbnail: string) => Promise<boolean>;
-    /** Presentation only. Each resolves false when the defaults file could not be written. */
+    /** 기본값 세팅. Each resolves false when the defaults file could not be written. */
     onSetPageDefault?: () => Promise<boolean>;
     onSetDeckDefault?: () => Promise<boolean>;
   },
@@ -2663,11 +2455,9 @@ export function bindStudio(
   stopMotion();
   commitOpenGesture?.();
   commitOpenGesture = null;
-  if (!hasSources(config)) return;
   useHistory(config.historyKey ?? config.id);
   let sources = config.groups.flatMap((group) => group.items);
   const presetOf = (id: string) => config.presets.find((item) => item.id === id) ?? config.presets[0]!;
-  const presetButtons = [...root.querySelectorAll<HTMLButtonElement>("[data-preset-id]")];
   const sizeRange = root.querySelector<HTMLInputElement>("#studio-size");
   const sizeNumber = root.querySelector<HTMLInputElement>("#studio-size-number");
   const widthRange = root.querySelector<HTMLInputElement>("#studio-width");
@@ -2972,100 +2762,7 @@ export function bindStudio(
     return;
   }
 
-  const speakerSources = () => {
-    const srcs = [...(config.conference?.speakers ?? [])].map((item) => conferenceSrc(item)).sort((a, b) => a.localeCompare(b, "en"));
-    return applySpeakerOrder(srcs, readInstagramOrder());
-  };
-  const orderList = root.querySelector<HTMLElement>("#studio-speaker-order-list");
-  let orderDrag: { pointerId: number; node: HTMLElement; moved: boolean; startX: number } | null = null;
-  const speakerCardLabel = (slide: StudioState, src: string) => {
-    const layer = slide.layers.find((item) => item.kind === "body" && item.text.trim());
-    if (layer?.kind === "body") return layer.text.trim().replace(/\s+/g, " ");
-    return sources.find((item) => item.src === src)?.label || "카드";
-  };
-  const renderSpeakerOrder = () => {
-    if (!(orderList instanceof HTMLElement) || !speakerDeck) return;
-    const srcs = speakerDeck.srcs;
-    const same =
-      orderList.childElementCount === srcs.length &&
-      [...orderList.children].every((node, index) => node instanceof HTMLElement && node.dataset.src === srcs[index]);
-    if (!same && orderDrag) return;
-    if (!same) {
-      orderList.innerHTML = srcs
-        .map((src) => {
-          const thumb = sources.find((item) => item.src === src)?.thumb ?? "";
-          return `<button type="button" class="studio__order-card" data-src="${escapeHtml(src)}" draggable="false"><span class="studio__order-index"></span><img src="${escapeHtml(thumb)}" alt="" draggable="false" /><span class="studio__order-name"></span></button>`;
-        })
-        .join("");
-    }
-    [...orderList.children].forEach((node, index) => {
-      if (!(node instanceof HTMLElement)) return;
-      const src = srcs[index] ?? "";
-      const slide = index === speakerDeck!.index ? state : speakerDeck!.slides[index];
-      const label = slide ? speakerCardLabel(slide, src) : "";
-      const indexLabel = node.querySelector(".studio__order-index");
-      const caption = node.querySelector(".studio__order-name");
-      if (indexLabel) indexLabel.textContent = String(index + 1);
-      if (caption && caption.textContent !== label) caption.textContent = label;
-      node.title = "드래그하면 순서가 바뀝니다";
-      node.setAttribute("aria-current", index === speakerDeck!.index ? "true" : "false");
-      node.setAttribute("aria-label", `${index + 1}번째 카드, ${label}. 드래그하면 순서가 바뀝니다.`);
-    });
-  };
-  const labelSpeaker = () => {
-    const label = root.querySelector("#studio-speaker-count");
-    if (label instanceof HTMLElement && speakerDeck) label.textContent = `${speakerDeck.index + 1} / ${speakerDeck.slides.length}`;
-    renderSpeakerOrder();
-  };
-  const placeSpeaker = (from: number, to: number) => {
-    if (!speakerDeck || !(orderList instanceof HTMLElement)) return;
-    if (from === to || from < 0 || to < 0 || from >= speakerDeck.srcs.length || to >= speakerDeck.srcs.length) return;
-    speakerDeck.slides[speakerDeck.index] = cloneStudio(state);
-    const current = speakerDeck.srcs[speakerDeck.index] ?? "";
-    const [src] = speakerDeck.srcs.splice(from, 1);
-    const [slide] = speakerDeck.slides.splice(from, 1);
-    if (!src || !slide) return;
-    speakerDeck.srcs.splice(to, 0, src);
-    speakerDeck.slides.splice(to, 0, slide);
-    const nextIndex = speakerDeck.srcs.indexOf(current);
-    speakerDeck.index = nextIndex < 0 ? 0 : nextIndex;
-    const cards = [...orderList.children];
-    const node = cards[from];
-    if (node instanceof HTMLElement) orderList.insertBefore(node, to > from ? (cards[to + 1] ?? null) : (cards[to] ?? null));
-    labelSpeaker();
-  };
-  const syncSpeakerDeck = () => {
-    if (config.id !== "conference" || state.presetId !== DEFAULT_CONFERENCE_PRESET_ID) return;
-    const srcs = speakerSources();
-    if (srcs.length < 2) return;
-    if (!speakerDeck) {
-      const stored = readStoredConferenceBaseline(DEFAULT_CONFERENCE_PRESET_ID);
-      const saved: Record<string, StudioState | null> = {};
-      for (const src of srcs) saved[src] = readInstagramCard(src);
-      const built = instagramDeck(stored ?? cloneStudio(state), srcs, saved);
-      speakerDeck = { ...built, srcs };
-      speakerDeckMode = "keep";
-      replaceStudio(state, speakerDeck.slides[speakerDeck.index]!);
-    } else if (speakerDeckMode === "apply") {
-      replaceStudio(state, speakerDeck.slides[speakerDeck.index]!);
-      speakerDeckMode = "keep";
-    } else if (speakerDeckMode === "reset") {
-      const src = speakerDeck.srcs[speakerDeck.index] ?? srcs[speakerDeck.index];
-      if (src) {
-        const next = replaceSpeakerSrc(state, src);
-        speakerDeck.slides[speakerDeck.index] = next;
-        replaceStudio(state, next);
-      }
-      speakerDeckMode = "keep";
-    } else {
-      speakerDeck.slides[speakerDeck.index] = cloneStudio(state);
-    }
-    labelSpeaker();
-  };
-  syncSpeakerDeck();
-
   let dropper = false;
-  let blockPresetClick = false;
   let penMode = false;
   let penEdit: { id: string; snapshot: PenAnchor[] | null; box: { x: number; y: number; width: number; height: number } | null; active: number | null } | null = null;
   let penDraft: {
@@ -3098,7 +2795,7 @@ export function bindStudio(
   const srcUrl = (src: string): string => {
     const upload = uploadBySrc(src);
     if (upload) return upload.url;
-    const media = presentationFileUrl(src);
+    const media = presentationFileUrl(src, config.project);
     if (media) return media;
     const source =
       sources.find((item) => item.src === src) ??
@@ -3120,14 +2817,14 @@ export function bindStudio(
   const backgroundRecord = (): ConferenceBackground | null =>
     (state.background && config.conference?.backgrounds.find((item) => item.id === state.background?.id)) || null;
   const backgroundStill = () => {
-    const file = state.background?.file && state.background.mode !== "video" ? presentationFileUrl(state.background.file) : null;
+    const file = state.background?.file && state.background.mode !== "video" ? presentationFileUrl(state.background.file, config.project) : null;
     if (file) return file;
     const path = backgroundRecord()?.image?.path;
     return path ? assetUrl(path) : "";
   };
   const backgroundVideoUrl = () => {
     if (state.background?.mode !== "video") return "";
-    const file = state.background.file ? presentationFileUrl(state.background.file) : null;
+    const file = state.background.file ? presentationFileUrl(state.background.file, config.project) : null;
     if (file) return file;
     const path = backgroundRecord()?.video?.path;
     return path ? assetUrl(path) : "";
@@ -3218,9 +2915,8 @@ export function bindStudio(
     const image = imageCache.get(url);
     return Boolean(image?.complete && image.naturalWidth > 0);
   };
-  let holdSlide = false;
   const setImageLoading = (on: boolean) => {
-    const show = on && !holdSlide;
+    const show = on;
     imageLoading.hidden = !show;
     if (show) stage.dataset.loading = "true";
     else {
@@ -3645,11 +3341,6 @@ export function bindStudio(
   const syncForm = () => {
     const title = panelText("title");
     const body = panelText("body");
-    for (const button of presetButtons) {
-      const selected = button.dataset.presetId === state.presetId;
-      button.setAttribute("aria-checked", selected ? "true" : "false");
-      button.tabIndex = selected ? 0 : -1;
-    }
     const sizeAnchor = selectedLayers().length > 0 ? resetButton : textFields;
     if (cardSizeFields.nextElementSibling !== sizeAnchor) sizeAnchor.before(cardSizeFields);
     const texts = selectedLayers().filter(isTextLayer);
@@ -3763,7 +3454,7 @@ export function bindStudio(
     markTheme(panelImage().src);
   };
 
-  let enterOnShow = config.id === "presentation";
+  let enterOnShow = true;
   const redraw = async (): Promise<void> => {
     const token = ++drawToken;
     clampLayout();
@@ -3871,37 +3562,6 @@ export function bindStudio(
     number.addEventListener("blur", commitNumber);
   };
 
-  const pickPreset = (button: HTMLButtonElement) => {
-    const preset = presetOf(button.dataset.presetId ?? "");
-    const onInstagram = state.presetId === DEFAULT_CONFERENCE_PRESET_ID;
-    const toInstagram = preset.id === DEFAULT_CONFERENCE_PRESET_ID;
-    if (speakerDeck && onInstagram && !toInstagram) speakerDeck.slides[speakerDeck.index] = cloneStudio(state);
-    if (speakerDeck && toInstagram && !onInstagram) speakerDeckMode = "apply";
-    else if (speakerDeck && toInstagram && onInstagram) speakerDeckMode = "reset";
-    else speakerDeckMode = "keep";
-    if (recordChange(() => actions.onLoadPreset(preset.id))) {
-      document.querySelector<HTMLButtonElement>(`[data-preset-id="${preset.id}"]`)?.focus();
-      return;
-    }
-    beginGesture(button);
-    state.presetId = preset.id;
-    state.cardWidth = preset.width;
-    state.cardHeight = preset.height;
-    finishGesture(button);
-    void redraw();
-  };
-  for (const button of presetButtons) {
-    button.addEventListener("click", () => pickPreset(button));
-    button.addEventListener("keydown", (event) => {
-      const delta = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
-      if (!delta) return;
-      event.preventDefault();
-      const next = presetButtons[(presetButtons.indexOf(button) + delta + presetButtons.length) % presetButtons.length];
-      if (!next) return;
-      pickPreset(next);
-      if (next.isConnected) next.focus();
-    });
-  }
   sizeRange.addEventListener("pointerdown", captureSizeRatio);
   sizeRange.addEventListener("keydown", captureSizeRatio);
   sizeNumber.addEventListener("focus", captureSizeRatio);
@@ -4179,49 +3839,6 @@ export function bindStudio(
       void redraw();
     });
   }
-  const snapshotCard = async (): Promise<string> => {
-    const offscreen = document.createElement("canvas");
-    if (state.code.trim()) {
-      await paintForeignObject(
-        offscreen,
-        studioFragment(await codeDocument()),
-        state.cardWidth,
-        state.cardHeight,
-      );
-    } else {
-      drawCard(offscreen, state, imageOf, undefined, stillPaint());
-    }
-    const maxEdge = 1080;
-    const edge = Math.max(state.cardWidth, state.cardHeight);
-    if (edge <= maxEdge) return offscreen.toDataURL("image/png");
-    const scale = maxEdge / edge;
-    const thumb = document.createElement("canvas");
-    thumb.width = Math.max(1, Math.round(state.cardWidth * scale));
-    thumb.height = Math.max(1, Math.round(state.cardHeight * scale));
-    thumb.getContext("2d")?.drawImage(offscreen, 0, 0, thumb.width, thumb.height);
-    return thumb.toDataURL("image/png");
-  };
-
-  root.querySelector("#studio-set-baseline")?.addEventListener("click", () => {
-    void (async () => {
-      const perCard = Boolean(speakerDeck && state.presetId === DEFAULT_CONFERENCE_PRESET_ID);
-      const ok = await confirmProceed(
-        perCard
-          ? "이 카드만 초기화 기준으로 세팅하고 진행하시겠습니까?"
-          : "현재 레이아웃을 초기화 기준으로 세팅하고 진행하시겠습니까?",
-      );
-      if (!ok) return;
-      if (perCard && speakerDeck) {
-        const src = speakerDeck.srcs[speakerDeck.index] ?? speakerSrcOf(state);
-        const card = cloneStudio(state);
-        writeInstagramCard(src, card);
-        speakerDeck.slides[speakerDeck.index] = card;
-      } else {
-        actions.onSetBaseline?.();
-      }
-      showToast(perCard ? "이 카드를 초기화 기준으로 세팅하였습니다." : "초기화로 세팅하였습니다.");
-    })();
-  });
   const bindDefault = (id: string, question: string, done: string, run: (() => Promise<boolean>) | undefined) => {
     root.querySelector(id)?.addEventListener("click", () => {
       void (async () => {
@@ -4232,35 +3849,6 @@ export function bindStudio(
   };
   bindDefault("#studio-set-page-default", "이 페이지만 지금 상태로 기본값에 세팅하고 진행하시겠습니까?", "이 페이지를 기본값으로 세팅하였습니다.", actions.onSetPageDefault);
   bindDefault("#studio-set-deck-default", "전체 페이지를 지금 상태로 기본값에 세팅하고 진행하시겠습니까?", "전체 페이지를 기본값으로 세팅하였습니다.", actions.onSetDeckDefault);
-  root.querySelector("#studio-save-library")?.addEventListener("click", () => {
-    void (async () => {
-      const ok = await confirmProceed("현재 카드를 그래픽 라이브러리에 추가하고 진행하시겠습니까?");
-      if (!ok) return;
-      const saved = (await actions.onAddToLibrary?.(await snapshotCard())) ?? false;
-      showToast(saved ? "그래픽 라이브러리에 추가하였습니다." : "그래픽 라이브러리에 추가하지 못했습니다.");
-    })();
-  });
-  root.querySelector("#studio-reset")?.addEventListener("click", () => {
-    const perCard = Boolean(speakerDeck && state.presetId === DEFAULT_CONFERENCE_PRESET_ID);
-    const src = perCard && speakerDeck ? speakerDeck.srcs[speakerDeck.index] ?? speakerSrcOf(state) : "";
-    const saved = src ? readInstagramCard(src) : null;
-    if (perCard && speakerDeck && saved) {
-      recordChange(() => {
-        const card = cloneStudio(saved);
-        speakerDeck!.slides[speakerDeck!.index] = card;
-        replaceStudio(state, card);
-        selected.clear();
-        void redraw();
-        return true;
-      });
-      return;
-    }
-    recordChange(() => {
-      if (perCard) speakerDeckMode = "reset";
-      actions.onReset?.();
-      return true;
-    });
-  });
   titleInput.addEventListener("focus", () => beginGesture(titleInput));
   titleInput.addEventListener("input", () => {
     panelText("title").text = titleInput.value;
@@ -4270,7 +3858,6 @@ export function bindStudio(
   bodyInput.addEventListener("focus", () => beginGesture(bodyInput));
   bodyInput.addEventListener("input", () => {
     panelText("body").text = bodyInput.value;
-    renderSpeakerOrder();
     void redraw();
   });
   bodyInput.addEventListener("blur", () => finishGesture(bodyInput));
@@ -4509,32 +4096,22 @@ export function bindStudio(
     selectTheme(src, focus);
     finishGesture(button);
   };
-  const deleteUpload = async (id: string) => {
-    const upload = getUploads().find((item) => item.id === id);
-    if (!upload || !(await confirmProceed(`"${upload.name}" 이미지를 테마에서 지울까요? 이 이미지를 쓰던 레이어는 테마 이미지로 바뀝니다.`))) return;
-    if (!(await removeUpload(id))) {
-      showToast("이미지를 지우지 못했습니다.");
-      return;
-    }
-    renderThemes();
-    void redraw();
-  };
   const controlFileButton = (target: EventTarget | null): HTMLButtonElement | null => {
     if (!(target instanceof Element)) return null;
     const button = target.closest<HTMLButtonElement>("[data-theme-slug]");
     if (!button || !themeGrid?.contains(button)) return null;
     const src = button.dataset.themeSlug ?? "";
-    if (isUploadSrc(src)) return button;
     const pageId = config.pageId;
     if (pageId && src.startsWith(`pres:${pageId}/`)) return button;
     return null;
   };
   const deletePageFile = async (src: string) => {
     const pageId = config.pageId;
-    if (!pageId || !src.startsWith(`pres:${pageId}/`)) return;
+    const project = config.project;
+    if (!pageId || !project || !src.startsWith(`pres:${pageId}/`)) return;
     const name = src.slice(`pres:${pageId}/`.length);
     if (!name || name.includes("/") || name.includes("\\")) return;
-    const keys = await removePageFile(pageId, name);
+    const keys = await removePageFile(project, pageId, name);
     if (!keys) {
       showToast("파일을 지우지 못했습니다.");
       return;
@@ -4564,18 +4141,9 @@ export function bindStudio(
       backgroundOn = false;
     });
   };
-  const deleteControlFile = (button: HTMLButtonElement) => {
-    const src = button.dataset.themeSlug ?? "";
-    if (isUploadSrc(src)) return deleteUpload(src.slice(UPLOAD_PREFIX.length));
-    return deletePageFile(src);
-  };
+  const deleteControlFile = (button: HTMLButtonElement) => deletePageFile(button.dataset.themeSlug ?? "");
   themeGrid?.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
-    const remove = target?.closest<HTMLButtonElement>("[data-upload-remove]");
-    if (remove) {
-      void deleteUpload(remove.dataset.uploadRemove ?? "");
-      return;
-    }
     if (target?.closest("#studio-theme-add")) {
       themeFile?.click();
       return;
@@ -4664,33 +4232,19 @@ export function bindStudio(
     closeControlMenu();
     target?.focus();
   });
-  if (config.id === "presentation" && themeFile) {
-    themeFile.accept = "image/*,video/mp4,video/webm,video/quicktime,.svg,.mov";
-  }
+  if (themeFile) themeFile.accept = "image/*,video/mp4,video/webm,video/quicktime,.svg,.mov";
   themeFile?.addEventListener("change", () => {
     const picked = [...(themeFile.files ?? [])];
     themeFile.value = "";
     const pageId = config.pageId;
-    if (config.id === "presentation" && pageId) {
-      const files = picked.filter(isPageMedia);
-      if (files.length === 0) return;
-      void uploadPageFiles(pageId, files).then((saved) => {
-        if (saved.length < files.length) showToast("파일을 페이지 폴더에 넣지 못했습니다.");
-        root.querySelector<HTMLButtonElement>("#studio-theme-add")?.focus();
-      });
-      return;
-    }
-    const files = picked.filter((file) => file.type.startsWith("image/"));
-    if (files.length === 0) return;
-    void (async () => {
-      const added = (await Promise.all(files.map((file) => addUpload(file)))).filter((item) => item !== null);
-      if (added.length < files.length) showToast("이미지를 저장하지 못했습니다.");
-      if (added.length === 0) return;
-      renderThemes();
+    const files = picked.filter(isPageMedia);
+    if (!pageId || files.length === 0) return;
+    void uploadPageFiles(config.project ?? "", pageId, files).then((saved) => {
+      if (saved.length < files.length) showToast("파일을 페이지 폴더에 넣지 못했습니다.");
       root.querySelector<HTMLButtonElement>("#studio-theme-add")?.focus();
-    })();
+    });
   });
-  if (config.id === "presentation") {
+  {
     const onPageFiles = (event: Event) => {
       const detail = (event as CustomEvent<PageFileSource[]>).detail;
       const group = config.groups.find((item) => item.id === "page");
@@ -4755,7 +4309,6 @@ export function bindStudio(
   const backgroundButtons = [...root.querySelectorAll<HTMLButtonElement>("[data-background-mode]")];
   const backgroundClear = root.querySelector<HTMLButtonElement>("#studio-background-clear");
   const videoToggle = root.querySelector<HTMLButtonElement>("#studio-video-toggle");
-  const printButton = root.querySelector<HTMLButtonElement>("#studio-print");
   const videoButton = root.querySelector<HTMLButtonElement>("#studio-video");
   const gifButton = root.querySelector<HTMLButtonElement>("#studio-gif");
   const pdfButton = root.querySelector<HTMLButtonElement>("#studio-pdf");
@@ -4792,9 +4345,6 @@ export function bindStudio(
       videoToggle.innerHTML = videoPaused ? playIcon : pauseIcon;
       videoToggle.setAttribute("aria-label", label);
       videoToggle.title = label;
-    }
-    if (printButton && exporting?.button !== printButton) {
-      printButton.hidden = !printSize(state.presetId, state.cardWidth, state.cardHeight) || codeMode;
     }
     if (videoButton && exporting?.button !== videoButton) {
       videoButton.hidden = !video || codeMode;
@@ -4918,7 +4468,7 @@ export function bindStudio(
   const startExport = (button: HTMLButtonElement, cancel: () => void) => {
     exporting = { button, label: button.textContent ?? "", cancel };
     studio.dataset.recording = "true";
-    for (const other of [printButton, videoButton, gifButton, pdfButton]) if (other && other !== button) other.disabled = true;
+    for (const other of [videoButton, gifButton, pdfButton]) if (other && other !== button) other.disabled = true;
     syncVideoLoop();
   };
   const exportProgress = (note: string, percent: number) => {
@@ -4934,7 +4484,6 @@ export function bindStudio(
     exporting.button.textContent = exporting.label;
     exporting = null;
     delete studio.dataset.recording;
-    if (printButton) printButton.disabled = false;
     if (pdfButton) pdfButton.disabled = false;
     if (gifButton) gifButton.disabled = false;
     if (exportNote) exportNote.hidden = true;
@@ -4947,45 +4496,6 @@ export function bindStudio(
     const url = backgroundStill();
     if (url) await loadImage(url).catch(() => null);
     return stillPaint();
-  };
-
-  const runPrint = async (button: HTMLButtonElement) => {
-    const size = printSize(state.presetId, state.cardWidth, state.cardHeight);
-    if (!size) return;
-    let cancelled = false;
-    startExport(button, () => {
-      cancelled = true;
-    });
-    const encoder = createPngEncoder(size.width, size.height, size.dpi);
-    try {
-      const background = await exportBackground();
-      const scaleX = size.width / state.cardWidth;
-      const scaleY = size.height / state.cardHeight;
-      const strip = document.createElement("canvas");
-      strip.width = size.width;
-      const strips = printStrips(size.width, size.height);
-      for (const [index, part] of strips.entries()) {
-        if (cancelled) break;
-        strip.height = part.h;
-        const ctx = strip.getContext("2d", { willReadFrequently: true });
-        if (!ctx) throw new Error("canvas");
-        ctx.setTransform(scaleX, 0, 0, scaleY, 0, -part.y);
-        paintCard(ctx, state, imageOf, undefined, background);
-        await encoder.writeRows(ctx.getImageData(0, 0, size.width, part.h).data, part.h);
-        exportProgress(`인쇄용 PNG ${size.width} × ${size.height}px · ${size.dpi}dpi 만드는 중`, ((index + 1) / strips.length) * 100);
-        await new Promise((resolve) => window.setTimeout(resolve));
-      }
-      if (cancelled) {
-        encoder.abort();
-        return;
-      }
-      downloadBlob(new Blob(await encoder.finish(), { type: "image/png" }), exportName(`-print-${size.dpi}dpi.png`));
-    } catch {
-      encoder.abort();
-      showToast("인쇄용 PNG를 만들지 못했습니다.");
-    } finally {
-      endExport();
-    }
   };
 
   const avcCodec = (width: number, height: number) =>
@@ -5202,12 +4712,7 @@ export function bindStudio(
     await paintForeignObject(offscreen, studioFragment(await codeDocument()), state.cardWidth, state.cardHeight);
     return offscreen;
   };
-  const cardFileName = (suffix: string) =>
-    config.id === "conference"
-      ? exportName(suffix)
-      : config.id === "presentation"
-        ? `ax-presentation-${state.cardWidth}x${state.cardHeight}${suffix}`
-        : `ax-studio-${state.cardWidth}x${state.cardHeight}-${state.themeSlug || "theme"}${suffix}`;
+  const cardFileName = (suffix: string) => `ax-presentation-${state.cardWidth}x${state.cardHeight}${suffix}`;
 
   const sendCardToPage = async (pageUrl: string): Promise<boolean> => {
     const page = parseFigmaPageUrl(pageUrl);
@@ -5344,7 +4849,6 @@ export function bindStudio(
   };
 
   for (const [button, run] of [
-    [printButton, runPrint],
     [videoButton, runVideo],
     [gifButton, runGif],
     [pdfButton, runPdf],
@@ -6130,7 +5634,7 @@ export function bindStudio(
     return el;
   };
   const playEnter = async (): Promise<void> => {
-    if (config.id !== "presentation" || !scaler) return;
+    if (!scaler) return;
     enterOnShow = false;
     enterRun += 1;
     const run = enterRun;
@@ -6313,7 +5817,7 @@ export function bindStudio(
   };
   motionOnce?.addEventListener("click", () => setMotion("once"));
   motionLoop?.addEventListener("click", () => setMotion("loop"));
-  if (config.id === "presentation") {
+  {
     const onPageEnter = () => {
       if (!root.isConnected) return;
       motionEpoch += 1;
@@ -6632,7 +6136,7 @@ export function bindStudio(
     }
     if (alignBar) {
       const idle = shown.size < 1;
-      alignBar.hidden = config.id === "presentation" ? false : idle;
+      alignBar.hidden = false;
       const imageSelected = [...shown].some((id) => layerById(id)?.kind === "image");
       if (!imageSelected) imageAdjustOpen = false;
       imageAdjustButton.hidden = !imageSelected;
@@ -7766,7 +7270,7 @@ export function bindStudio(
     draft.hover = raw;
   };
 
-  if (config.id === "presentation") {
+  {
     canvas.tabIndex = -1;
     stage.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
@@ -8231,7 +7735,6 @@ export function bindStudio(
   };
   const dragsTheme = (event: DragEvent) => !state.code.trim() && !!event.dataTransfer?.types.includes(THEME_DRAG);
   const dragsFile = (event: DragEvent) =>
-    config.id === "presentation" &&
     !!config.pageId &&
     !state.code.trim() &&
     !!event.dataTransfer?.types.includes("Files") &&
@@ -8254,7 +7757,7 @@ export function bindStudio(
       event.preventDefault();
       const at = cardPoint(event);
       void (async () => {
-        const saved = await uploadPageFiles(pageId, files);
+        const saved = await uploadPageFiles(config.project ?? "", pageId, files);
         if (saved.length < files.length) showToast("파일을 페이지 폴더에 넣지 못했습니다.");
         let offset = 0;
         for (const item of saved) {
@@ -8290,29 +7793,17 @@ export function bindStudio(
   applyControlsWidth(state.controlsWidth);
 
   const deviceBox = root.querySelector<HTMLElement>("#studio-device");
-  const deviceButtons = [...root.querySelectorAll<HTMLButtonElement>(".studio-devices__btn")];
   const deviceThumb = root.querySelector<HTMLElement>("#studio-device-thumb");
   const deviceFrame = deviceBox?.parentElement;
   const placeDeviceThumb =
     deviceBox && deviceThumb && deviceFrame ? overlayScrollbar(deviceBox, deviceThumb, deviceFrame) : null;
+  // The editor is always the desktop frame; a breakpoint change still refits the panel and the scrollbar.
   const syncDevice = () => {
     if (!deviceBox) return;
-    const device = config.id === "presentation" ? "desktop" : activeDevice();
-    deviceBox.dataset.device = device;
-    deviceBox.dataset.framed = config.id === "presentation" || device === largestDevice() ? "false" : "true";
-    for (const button of deviceButtons) {
-      button.setAttribute("aria-pressed", button.dataset.device === device ? "true" : "false");
-    }
     applyControlsWidth(state.controlsWidth);
     placeDeviceThumb?.();
   };
   syncDevice();
-  for (const button of deviceButtons) {
-    button.addEventListener("click", () => {
-      studioDevice = button.dataset.device as Device;
-      syncDevice();
-    });
-  }
   stopDeviceWatch?.();
   const deviceQueries = [window.matchMedia(TABLET_QUERY), window.matchMedia(DESKTOP_QUERY)];
   for (const query of deviceQueries) query.addEventListener("change", syncDevice);
@@ -8499,31 +7990,6 @@ export function bindStudio(
     }
     // Instagram speaker cards follow the left and right keys when nothing is selected.
     // A selection still nudges, and fields that already use the arrows keep them.
-    if (
-      !mod &&
-      !event.altKey &&
-      !typing &&
-      !cropping &&
-      !penMode &&
-      !penEdit &&
-      !penDraft &&
-      !dropper &&
-      selected.size === 0 &&
-      speakerDeck &&
-      state.presetId === DEFAULT_CONFERENCE_PRESET_ID &&
-      (event.key === "ArrowLeft" || event.key === "ArrowRight")
-    ) {
-      const focused = event.target instanceof Element ? event.target : null;
-      const widget = focused?.closest(".studio__preset, #studio-sources, .studio__tabs, #studio-splitter, .studio__order");
-      const range = focused instanceof HTMLInputElement && focused.type === "range";
-      const menu = focused instanceof HTMLSelectElement;
-      if (!widget && !range && !menu) {
-        event.preventDefault();
-        const id = event.key === "ArrowRight" ? "#studio-speaker-next" : "#studio-speaker-prev";
-        document.querySelector<HTMLButtonElement>(id)?.click();
-        return;
-      }
-    }
     if (!onCard) return;
     if (cropping) {
       if (event.key !== "Enter" && event.key !== "Escape") return;
@@ -8548,8 +8014,6 @@ export function bindStudio(
       void redraw();
     }, 400);
   };
-  const presetTarget = (event: Event) =>
-    event.target instanceof Element ? event.target.closest<HTMLElement>(".studio__preset") : null;
   const onDropperPointer = (event: PointerEvent) => {
     if (!dropper || event.button !== 0) return;
     const rect = canvas.getBoundingClientRect();
@@ -8559,14 +8023,7 @@ export function bindStudio(
       event.clientY >= rect.top &&
       event.clientY <= rect.bottom;
     if (!inside) {
-      const preset = presetTarget(event);
-      if (preset) blockPresetClick = true;
       setDropper(false);
-      if (preset) {
-        event.preventDefault();
-        event.stopPropagation();
-        preset.blur();
-      }
       return;
     }
     event.preventDefault();
@@ -8574,19 +8031,6 @@ export function bindStudio(
     closeLayerMenu();
     if (editing) closeEditor(true);
     sampleDropper(cardPoint(event));
-  };
-  const onDropperClick = (event: MouseEvent) => {
-    const preset = presetTarget(event);
-    if (!preset) {
-      blockPresetClick = false;
-      return;
-    }
-    if (!dropper && !blockPresetClick) return;
-    blockPresetClick = false;
-    setDropper(false);
-    event.preventDefault();
-    event.stopPropagation();
-    preset.blur();
   };
   const onDrawShift = (event: KeyboardEvent) => {
     if (event.key === "Alt" && !event.repeat && drag) {
@@ -8623,7 +8067,6 @@ export function bindStudio(
   document.addEventListener("keyup", onDrawShift);
   window.addEventListener("blur", endSpacePan);
   document.addEventListener("pointerdown", onDropperPointer, true);
-  document.addEventListener("click", onDropperClick, true);
   let pasteShift = 0;
   let pasteAnchor = "";
   const placePastedMedia = async (files: File[]) => {
@@ -8644,33 +8087,16 @@ export function bindStudio(
     const at = { x: base.x + pasteShift, y: base.y + pasteShift };
     pasteShift = (pasteShift + 24) % 240;
     const pageId = config.pageId;
-    if (config.id === "presentation" && pageId) {
-      const media = named.filter(isPageMedia);
-      if (media.length === 0) {
-        showToast("이 형식의 그림은 붙여 넣을 수 없습니다.");
-        return;
-      }
-      const saved = await uploadPageFiles(pageId, media);
-      if (saved.length < media.length) showToast("파일을 페이지 폴더에 넣지 못했습니다.");
-      let offset = 0;
-      for (const item of saved) {
-        await insertImage(item.src, { x: at.x + offset, y: at.y + offset }, "native");
-        offset += 24;
-      }
-      return;
-    }
-    const images = named.filter((file) => file.type.startsWith("image/"));
-    if (images.length === 0) {
+    const media = named.filter(isPageMedia);
+    if (!pageId || media.length === 0) {
       showToast("이 형식의 그림은 붙여 넣을 수 없습니다.");
       return;
     }
-    const added = (await Promise.all(images.map((file) => addUpload(file)))).filter((item) => item !== null);
-    if (added.length < images.length) showToast("이미지를 저장하지 못했습니다.");
-    if (added.length === 0) return;
-    renderThemes();
+    const saved = await uploadPageFiles(config.project ?? "", pageId, media);
+    if (saved.length < media.length) showToast("파일을 페이지 폴더에 넣지 못했습니다.");
     let offset = 0;
-    for (const upload of added) {
-      await insertImage(uploadSrc(upload), { x: at.x + offset, y: at.y + offset }, "native");
+    for (const item of saved) {
+      await insertImage(item.src, { x: at.x + offset, y: at.y + offset }, "native");
       offset += 24;
     }
   };
@@ -8700,14 +8126,13 @@ export function bindStudio(
     document.removeEventListener("keyup", onDrawShift);
     window.removeEventListener("blur", endSpacePan);
     document.removeEventListener("pointerdown", onDropperPointer, true);
-    document.removeEventListener("click", onDropperClick, true);
     document.removeEventListener("paste", onPaste);
     endSpacePan();
   };
 
   const panelToggle = root.querySelector<HTMLButtonElement>("#studio-panel-toggle");
   const syncPanelToggle = (open: boolean) => {
-    if (!panelToggle || config.id !== "presentation") return;
+    if (!panelToggle) return;
     studio.dataset.controls = open ? "open" : "closed";
     panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
     const label = open ? "컨트롤 패널 접기" : "컨트롤 패널 펼치기";
@@ -8769,171 +8194,6 @@ export function bindStudio(
   document.addEventListener(PRESENT_LAYOUT_EVENT, fitPresent);
   stopPresentFit = () => document.removeEventListener(PRESENT_LAYOUT_EVENT, fitPresent);
 
-  let sliding = false;
-  const cardShot = (): HTMLCanvasElement | null => {
-    if (canvas.hidden || canvas.width < 2 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
-    const rect = fit.getBoundingClientRect();
-    const shot = document.createElement("canvas");
-    shot.className = "studio__slide-ghost";
-    shot.width = Math.max(1, Math.round(rect.width * window.devicePixelRatio));
-    shot.height = Math.max(1, Math.round(rect.height * window.devicePixelRatio));
-    const ctx = shot.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(canvas, 0, 0, shot.width, shot.height);
-    return shot;
-  };
-  const playCardSlide = (outgoing: HTMLCanvasElement, incoming: HTMLCanvasElement, delta: number) =>
-    new Promise<void>((resolve) => {
-      const dir = delta > 0 ? 1 : -1;
-      const gap = 36;
-      outgoing.style.transform = "translateX(0)";
-      incoming.style.transform = `translateX(calc(${dir * 100}% + ${dir * gap}px))`;
-      fit.append(outgoing, incoming);
-      fit.dataset.sliding = "true";
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        outgoing.remove();
-        incoming.remove();
-        delete fit.dataset.sliding;
-        resolve();
-      };
-      window.setTimeout(finish, 560);
-      incoming.addEventListener("transitionend", finish, { once: true });
-      requestAnimationFrame(() => {
-        void fit.offsetWidth;
-        outgoing.classList.add("is-moving");
-        incoming.classList.add("is-moving");
-        outgoing.style.transform = `translateX(calc(${dir * -100}% + ${dir * -gap}px))`;
-        incoming.style.transform = "translateX(0)";
-      });
-    });
-  const stepSpeaker = (delta: number) => {
-    if (!speakerDeck || state.presetId !== DEFAULT_CONFERENCE_PRESET_ID || sliding) return;
-    if (editing) closeEditor(true);
-    if (cropping) endCrop(true);
-    if (penDraft) {
-      penDraft = null;
-      penMode = false;
-      syncPenMode();
-    }
-    if (penEdit) cancelPenEdit();
-    finishGesture();
-    sliding = true;
-    const outgoing = cardShot();
-    if (outgoing) {
-      holdSlide = true;
-      outgoing.style.transform = "translateX(0)";
-      fit.appendChild(outgoing);
-      fit.dataset.sliding = "true";
-    }
-    speakerDeck.slides[speakerDeck.index] = cloneStudio(state);
-    const count = speakerDeck.slides.length;
-    speakerDeck.index = (speakerDeck.index + delta + count) % count;
-    replaceStudio(state, speakerDeck.slides[speakerDeck.index]!);
-    selected.clear();
-    undoStack.length = 0;
-    redoStack.length = 0;
-    gesture = null;
-    syncHistoryButtons();
-    labelSpeaker();
-    void (async () => {
-      try {
-        await redraw();
-        const incoming = outgoing ? cardShot() : null;
-        if (outgoing && incoming) await playCardSlide(outgoing, incoming, delta);
-      } finally {
-        holdSlide = false;
-        outgoing?.remove();
-        delete fit.dataset.sliding;
-        sliding = false;
-      }
-    })();
-  };
-  root.querySelector("#studio-speaker-prev")?.addEventListener("click", () => stepSpeaker(-1));
-  root.querySelector("#studio-speaker-next")?.addEventListener("click", () => stepSpeaker(1));
-  if (orderList) {
-    const draggedIndex = (clientX: number) => {
-      if (!orderDrag) return -1;
-      const cards = [...orderList.querySelectorAll<HTMLElement>(".studio__order-card")];
-      const from = cards.indexOf(orderDrag.node);
-      if (from < 0) return -1;
-      let to = from;
-      for (let index = from + 1; index < cards.length; index += 1) {
-        const rect = cards[index]!.getBoundingClientRect();
-        if (clientX > rect.left + rect.width / 2) to = index;
-      }
-      for (let index = from - 1; index >= 0; index -= 1) {
-        const rect = cards[index]!.getBoundingClientRect();
-        if (clientX < rect.left + rect.width / 2) to = index;
-      }
-      return to === from ? -1 : to;
-    };
-    orderList.addEventListener("pointerdown", (event) => {
-      if (orderDrag || sliding || event.button !== 0) return;
-      const card = event.target instanceof Element ? event.target.closest<HTMLElement>(".studio__order-card") : null;
-      if (!card) return;
-      orderDrag = { pointerId: event.pointerId, node: card, moved: false, startX: event.clientX };
-      try {
-        orderList.setPointerCapture(event.pointerId);
-      } catch {
-        /* a pointer that is already gone still reorders through this listener */
-      }
-    });
-    orderList.addEventListener("pointermove", (event) => {
-      if (!orderDrag || event.pointerId !== orderDrag.pointerId) return;
-      if (!orderDrag.moved && Math.abs(event.clientX - orderDrag.startX) < 4) return;
-      orderDrag.moved = true;
-      orderDrag.node.classList.add("is-dragging");
-      const to = draggedIndex(event.clientX);
-      if (to < 0) return;
-      const from = [...orderList.children].indexOf(orderDrag.node);
-      placeSpeaker(from, to);
-    });
-    const finishOrderDrag = (event: PointerEvent) => {
-      if (!orderDrag || event.pointerId !== orderDrag.pointerId) return;
-      const moved = orderDrag.moved;
-      orderDrag.node.classList.remove("is-dragging");
-      orderDrag = null;
-      try {
-        orderList.releasePointerCapture(event.pointerId);
-      } catch {
-        /* capture was already released */
-      }
-      if (!moved || !speakerDeck) return;
-      const blockClick = (click: Event) => {
-        click.preventDefault();
-        click.stopPropagation();
-      };
-      orderList.addEventListener("click", blockClick, true);
-      window.setTimeout(() => orderList.removeEventListener("click", blockClick, true), 0);
-      writeInstagramOrder(speakerDeck.srcs);
-      renderSpeakerOrder();
-    };
-    orderList.addEventListener("pointerup", finishOrderDrag);
-    orderList.addEventListener("pointercancel", finishOrderDrag);
-    orderList.addEventListener("click", (event) => {
-      const card = event.target instanceof Element ? event.target.closest<HTMLElement>(".studio__order-card") : null;
-      if (!card || !speakerDeck) return;
-      const index = [...orderList.children].indexOf(card);
-      if (index < 0 || index === speakerDeck.index) return;
-      stepSpeaker(index - speakerDeck.index);
-    });
-    orderList.addEventListener("keydown", (event) => {
-      if ((event.key !== "ArrowLeft" && event.key !== "ArrowRight") || event.altKey || event.metaKey || event.ctrlKey) return;
-      const card = event.target instanceof Element ? event.target.closest<HTMLElement>(".studio__order-card") : null;
-      if (!card || !speakerDeck || sliding) return;
-      const from = [...orderList.children].indexOf(card);
-      const to = from + (event.key === "ArrowRight" ? 1 : -1);
-      if (from < 0 || to < 0 || to >= speakerDeck.srcs.length) return;
-      event.preventDefault();
-      event.stopPropagation();
-      placeSpeaker(from, to);
-      writeInstagramOrder(speakerDeck.srcs);
-      card.focus();
-    });
-  }
 
   void redraw();
 }

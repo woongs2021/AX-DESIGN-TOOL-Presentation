@@ -1,6 +1,5 @@
-import { presentationFileUrl } from "./presentation-files.ts";
+import { parsePresentationFile } from "./presentation-files.ts";
 import { LAYER_BLUR_MAX, clampUnit, layerBlurBottom, parseBlend, parseLayerEnter, parseShadow, shadowOffset, shapeBlend, shapeShadow, vectorSvg, type LayerEnter, type LineLayer, type LinearGradient, type PenLayer, type ShapeBlend, type ShapeLayer, type ShapeShadow, parseGradient, parseVectorLayer } from "./studio-shapes.ts";
-import { DEFAULT_PRESET_ID, presetById } from "./studio-presets.ts";
 
 export const RADIUS_MIN = 0;
 export const RADIUS_MAX = 120;
@@ -140,6 +139,17 @@ export function isMotionSrc(src: string): boolean {
 export function isVideoSrc(src: string): boolean {
   return /\.(mp4|webm|mov)$/i.test(motionName(src));
 }
+
+/** A card size the editor offers. Presentation has one, conf-slide (3840 × 2160). */
+export type StudioPreset = {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+};
+
+/** The card a stored state without its own size falls back to: the original Online Studio default, 1080 × 1080. */
+const DEFAULT_CARD = { id: "ig-feed-square", width: 1080, height: 1080 } as const;
 
 export type StudioState = {
   /** Conference only. */
@@ -290,8 +300,8 @@ function defaultLayer(kind: TextKind, src: string, cardWidth?: number, cardHeigh
 function defaultLayer(
   kind: "image" | TextKind,
   src: string,
-  cardWidth = presetById(DEFAULT_PRESET_ID).width,
-  cardHeight = presetById(DEFAULT_PRESET_ID).height,
+  cardWidth: number = DEFAULT_CARD.width,
+  cardHeight: number = DEFAULT_CARD.height,
 ): StudioLayer {
   if (kind === "image") {
     return { id: "image", kind, src, x: 0, y: 0, width: clampImageWidth(cardWidth), radius: IMAGE_RADIUS_DEFAULT, crop: null };
@@ -311,8 +321,8 @@ function defaultLayer(
   };
 }
 
-export function createStudioState(themeSlug: string, color: string, presetId = DEFAULT_PRESET_ID): StudioState {
-  const preset = presetById(presetId);
+export function createStudioState(themeSlug: string, color: string): StudioState {
+  const preset = DEFAULT_CARD;
   return {
     presetId: preset.id,
     cardWidth: preset.width,
@@ -668,7 +678,7 @@ function parseBackground(raw: unknown): StudioBackground | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
   if (typeof value.id !== "string" || !value.id) return null;
-  const file = typeof value.file === "string" && presentationFileUrl(value.file) ? value.file : "";
+  const file = typeof value.file === "string" && parsePresentationFile(value.file) ? value.file : "";
   const mode = value.mode === "video" ? "video" : "image";
   const play = mode === "video" && (value.play === "once" || value.play === "loop") ? value.play : undefined;
   return { id: value.id, mode, ...(file ? { file } : {}), ...(play ? { play } : {}) };
@@ -739,26 +749,6 @@ export function assignStudio(state: StudioState, next: StudioState): void {
   if (!next.groups?.length) delete state.groups;
   if (!next.locked?.length) delete state.locked;
   if (!next.background) delete state.background;
-}
-
-/** Restore the card to its starting values. The chosen theme, size preset, and panel width stay. */
-export function resetStudioState(state: StudioState, color: string): void {
-  const next = createStudioState(state.themeSlug, color, state.presetId);
-  next.controlsWidth = state.controlsWidth;
-  next.panel = state.panel;
-  assignStudio(state, next);
-}
-
-/** 초기화: a saved baseline replaces the factory start. A missing baseline uses resetStudioState. */
-export function applyStudioBaseline(state: StudioState, baseline: StudioState | null, color: string): void {
-  if (!baseline) {
-    resetStudioState(state, color);
-    return;
-  }
-  const { controlsWidth, panel } = state;
-  assignStudio(state, structuredClone(baseline));
-  state.controlsWidth = controlsWidth;
-  state.panel = panel;
 }
 
 export function normalizeHex(value: string): string | null {
@@ -1100,9 +1090,8 @@ export function studioFragment(input: StudioDocumentInput): string {
   const titleColor = normalizeHex(input.titleColor) ?? inkHex(color);
   const bodyColor = normalizeHex(input.bodyColor) ?? inkHex(color);
   const radius = clampRadius(input.radius);
-  const preset = presetById("ig-feed-square");
-  const width = input.width > 0 ? input.width : preset.width;
-  const height = input.height > 0 ? input.height : preset.height;
+  const width = input.width > 0 ? input.width : DEFAULT_CARD.width;
+  const height = input.height > 0 ? input.height : DEFAULT_CARD.height;
   const titleFont = input.titleFontStack.replaceAll(";", "");
   const bodyFont = input.bodyFontStack.replaceAll(";", "");
   const body = substituteStudioCode(input.code.trim() || input.design, input);
