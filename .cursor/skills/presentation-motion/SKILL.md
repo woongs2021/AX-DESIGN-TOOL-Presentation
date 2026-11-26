@@ -13,6 +13,12 @@ Presentation pages are Slide canvases, 3840×2160. Motion is a short looping vid
 
 Type 1 is a divider or the end page and has no light/dark version. Types 2 and 3 do. A motion clip must not force a type 1 page into a light or dark theme. On types 2 and 3, keep title and body readable on the page color after the clip is in place.
 
+## Motions tab first
+
+For moving type or pictures on a slide, check the Motions tab (`#/motions`, `src/motions/`) before writing a one-off clip. It has 10 typography and 10 image presets drawn in canvas 2D on a 1080 square. **영상 복사** makes a 1:1 video (WebM with alpha, or MP4 on a solid background) with a poster, and ⌘V in the Presentation editor pastes it as an image layer.
+
+To add a preset, add one object to `src/motions/typography.ts` or `src/motions/image.ts`. Its `duration`, `outro`, and `draw` use only their arguments and `kit` (no imports, no outer variables), because code copy pastes their source. Kit methods follow the same rule. Then run `npm run test:motions`.
+
 ## Where the clip goes
 
 - Type 1 and a type 3 full-bleed page: the clip is the page background video (`background.mode = "video"`), with the still frame as the image background.

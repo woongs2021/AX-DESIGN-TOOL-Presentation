@@ -1,14 +1,21 @@
 import "./shared/tokens.css";
 import "./styles/base.css";
 import "./styles/projects.css";
+import "./styles/motions.css";
 import type { ConferenceIndex } from "./shared/conference.ts";
 import type { SiteIndex } from "./shared/index-types.ts";
 import { loadUploads } from "./studio-uploads.ts";
+import { loadMotionFiles } from "./motion-assets.ts";
+import { loadMotionDefaults } from "./motion-defaults.ts";
+import { findMotionPreset, motionPresetsOf } from "./motions/index.ts";
+import { readMotionsMemory } from "./motions-store.ts";
+import type { MotionKind } from "./shared/motions.ts";
 import { syncGraphicLibrary } from "./views/studio.ts";
 import { confirmProceed, showToast } from "./feedback.ts";
 import { hrefFor, onRouteChange, parseHash, type Route } from "./router.ts";
 import { bindPresentation, releasePresentationMenu, renderPresentation, type DeckProject } from "./views/presentation.ts";
 import { bindProjects, releaseProjectsMenu, renderProjects } from "./views/projects.ts";
+import { bindMotions, releaseMotions, renderMotions } from "./views/motions.ts";
 import { refreshDiskThumb } from "./views/project-thumbs.ts";
 import { BUILT_PROJECTS } from "./built-projects.ts";
 import {
@@ -42,8 +49,8 @@ type LoadState =
   | { status: "ready"; conference: ConferenceIndex };
 
 let loadState: LoadState = { status: "loading" };
-/** The screen on show: the project list, or one project in the Presentation tab. */
-let view: { name: "projects" } | { name: "presentation"; project: string } = { name: "projects" };
+/** The screen on show: the project list, one project in the Presentation tab, or one preset in the Motions tab. */
+let view: { name: "projects" } | { name: "presentation"; project: string } | { name: "motions"; kind: MotionKind; preset: string } = { name: "projects" };
 
 function readStoredMode(): Mode {
   const stored = localStorage.getItem(MODE_KEY);
@@ -110,6 +117,7 @@ function shell(mainHtml: string): string {
       <nav class="nav-menu" aria-label="Primary">
         ${navLink("Projects", HOME, view.name === "projects")}
         ${navLink("Presentation", hrefFor({ name: "presentation", project: null }), view.name === "presentation")}
+        ${navLink("Motions", hrefFor({ name: "motions", kind: null, preset: null }), view.name === "motions")}
       </nav>
       <div class="nav-actions">
         <button type="button" class="button button--secondary" id="mode-toggle" aria-label="${nextModeLabel}" title="${nextModeLabel}">
@@ -125,7 +133,7 @@ function shell(mainHtml: string): string {
         </div>
       </div>
     </header>
-    <main class="shell ${view.name === "projects" ? "shell--projects" : "shell--studio"}" id="main">${mainHtml}</main>
+    <main class="shell shell--${view.name === "presentation" ? "studio" : view.name}" id="main">${mainHtml}</main>
   `;
 }
 
@@ -148,6 +156,7 @@ function renderMain(): string {
       </section>
     `;
   }
+  if (view.name === "motions") return renderMotions({ kind: view.kind, presetId: view.preset, mode: readStoredMode(), conference: loadState.conference });
   const project = openProject();
   if (!project) return renderProjects(readStoredMode());
   const deck = projectDeck(project, readStoredMode());
@@ -183,10 +192,23 @@ function deckProject(project: Project): DeckProject {
   };
 }
 
-/** Puts the address on a screen that exists: #/projects, or #/presentation/<id> of a known project. */
+/**
+ * Puts the address on a screen that exists: #/projects, #/presentation/<id> of a known project, or
+ * #/motions/<kind>/<presetId> of a known preset (the last one of the sub-tab when none is given, its first when unknown).
+ */
 function resolveRoute(route: Route = parseHash()): void {
   if (route.name === "projects") {
     view = { name: "projects" };
+    return;
+  }
+  if (route.name === "motions") {
+    const memory = readMotionsMemory();
+    const kind = route.kind ?? memory.kind;
+    const asked = findMotionPreset(route.preset ?? memory.last[kind] ?? "");
+    const preset = asked?.kind === kind ? asked : motionPresetsOf(kind)[0]!;
+    const href = hrefFor({ name: "motions", kind, preset: preset.id });
+    if (window.location.hash !== href) history.replaceState(null, "", href);
+    view = { name: "motions", kind, preset: preset.id };
     return;
   }
   if (route.name === "notfound") {
@@ -211,6 +233,7 @@ function resolveRoute(route: Route = parseHash()): void {
 function render(): void {
   releasePresentationMenu();
   releaseProjectsMenu();
+  releaseMotions();
   const app = document.querySelector<HTMLDivElement>("#app");
   if (!app) throw new Error("#app not found");
   applyMode(readStoredMode());
@@ -234,6 +257,10 @@ function render(): void {
 
   if (loadState.status !== "ready") return;
   const conference = loadState.conference;
+  if (view.name === "motions") {
+    bindMotions(app, { kind: view.kind, presetId: view.preset, mode: readStoredMode(), conference }, render);
+    return;
+  }
   const project = openProject();
   if (!project) {
     bindProjects(app, { index: conference, tone: readStoredMode(), onChange: render });
@@ -336,7 +363,7 @@ async function readGraphicLibrary(): Promise<void> {
 async function loadData(): Promise<void> {
   loadState = { status: "loading" };
   render();
-  const extras = Promise.all([loadUploads(), readGraphicLibrary()]);
+  const extras = Promise.all([loadUploads(), readGraphicLibrary(), loadMotionFiles(), loadMotionDefaults()]);
   const listed = loadProjects(BUILT_PROJECTS);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const conference = await readConference();

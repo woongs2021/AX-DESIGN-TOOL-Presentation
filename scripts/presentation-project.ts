@@ -10,6 +10,7 @@ import { backgroundIdFor, logoSlug, speakerSlug } from "../src/shared/conference
 import { GIT_MAX_FILE_BYTES } from "../src/shared/limits.ts";
 import { PRESENTATION_MEDIA_PREFIX, PRESENTATION_PROJECT_ROUTE, PRESENTATION_UPLOAD_ROUTE } from "../src/shared/presentation-files.ts";
 import { isProjectDir, isProjectId, PROJECT_FILE, PROJECT_PAGES_DIR, PROJECTS_DIR } from "../src/shared/projects.ts";
+import { isPosterName, posterNameFor } from "../src/shared/motions.ts";
 
 const META = "page.json";
 const IMAGE = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif"]);
@@ -174,7 +175,8 @@ function readFolders(root: string): Map<string, Folder> {
 function listFiles(folder: Folder): ListedFile[] {
   const files: ListedFile[] = [];
   for (const name of readdirSync(folder.dir)) {
-    if (name.startsWith(".") || name === META) continue;
+    // A motion video's poster (<name>.poster.png) is part of the video, not a page file.
+    if (name.startsWith(".") || name === META || isPosterName(name)) continue;
     const kind = kindOf(name);
     if (!kind || !statSync(join(folder.dir, name)).isFile()) continue;
     files.push({ name, kind, placed: folder.meta.placed.includes(name) });
@@ -314,7 +316,9 @@ function removeFile(root: string, pageId: string, rawName: string): { name: stri
   if (!existsSync(file) || !statSync(file).isFile()) return null;
   const keys = [...sources().entries()].flatMap(([key, source]) => (basename(source) === name ? [key] : []));
   rmSync(file);
-  const placed = folder.meta.placed.filter((item) => item !== name);
+  const poster = kindOf(name) === "video" ? posterNameFor(name) : null;
+  if (poster && existsSync(join(folder.dir, poster))) rmSync(join(folder.dir, poster));
+  const placed = folder.meta.placed.filter((item) => item !== name && item !== poster);
   if (placed.length !== folder.meta.placed.length) {
     folder.meta.placed = placed;
     writeMeta(folder.dir, folder.meta);

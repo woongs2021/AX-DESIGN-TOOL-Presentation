@@ -175,12 +175,12 @@ export function applyProjectAction(body: Action): ListedProject | null {
   return readProject(dir);
 }
 
-function loopback(req: IncomingMessage): boolean {
+export function loopback(req: IncomingMessage): boolean {
   const host = (req.headers.host ?? "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+export function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -198,7 +198,7 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-function send(res: ServerResponse, status: number, body?: unknown): void {
+export function send(res: ServerResponse, status: number, body?: unknown): void {
   res.statusCode = status;
   if (body === undefined) {
     res.end();

@@ -11,6 +11,7 @@ import {
   presentationFileUrl,
   presentationProjectEnabled,
 } from "../shared/presentation-files.ts";
+import { isPosterName } from "../shared/motions.ts";
 import type { PresentationDeck, PresentationPage } from "../shared/presentation.ts";
 import { pageAssetKeys, SLIDE_H, SLIDE_W } from "../shared/presentation.ts";
 import {
@@ -61,6 +62,8 @@ function remember(projectId: string, pageId: string, files: { name: string; kind
   }
   page.files ??= [];
   for (const file of files) {
+    // A motion video's poster belongs to the video; the panel does not list it.
+    if (isPosterName(file.name)) continue;
     if (!page.files.some((item) => item.name === file.name)) page.files.push({ name: file.name, kind: file.kind, placed: true });
   }
   publish(pageId);

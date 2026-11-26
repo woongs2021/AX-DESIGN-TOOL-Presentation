@@ -95,7 +95,7 @@
 | `#/presentation/<projectId>` | 그 프로젝트의 Presentation |
 | `#/presentation` | 마지막으로 연 프로젝트. 없으면 `#/projects` |
 
-- 네비: `Projects · Presentation` 순서.
+- 네비: `Projects · Presentation` 순서. Dev Phase 3에서 오른쪽에 `Motions`를 더했다.
 - 주소 없이 열거나 알 수 없는 주소는 `#/projects`로 보낸다.
 
 ## 데이터 모델

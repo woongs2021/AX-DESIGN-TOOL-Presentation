@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { GITHUB_PAGES_MAX_BYTES } from "../src/shared/limits.ts";
+import { posterNameFor, posterUrlFor } from "../src/shared/motions.ts";
 import { PRESENTATION_STATIC_DIR, parsePresentationFile } from "../src/shared/presentation-files.ts";
 import { PROJECT_DECK_FILE, PROJECT_PAGES_DIR } from "../src/shared/projects.ts";
 import { projectDirs } from "./presentation-project.ts";
@@ -18,7 +19,7 @@ function run(command: string, args: string[]): void {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-/** Copies the page-folder files a project's deck.json uses next to the app. Returns their bytes. */
+/** Copies the page-folder files a project's deck.json uses next to the app, with a pasted motion's poster. Returns their bytes. */
 function copyProjectMedia(appDir: string, projectId: string, projectDir: string): number {
   const root = join(projectDir, PROJECT_PAGES_DIR);
   const folders = new Map<string, string>();
@@ -35,6 +36,13 @@ function copyProjectMedia(appDir: string, projectId: string, projectDir: string)
   for (const page of deck.pages ?? []) {
     for (const layer of page.state?.layers ?? []) if (typeof layer.src === "string") srcs.add(layer.src);
     if (typeof page.state?.background?.file === "string") srcs.add(page.state.background.file);
+  }
+  // A video pasted from Motions shows its poster in stills (PDF, PPTX, thumbnails); deck.json names only the video.
+  for (const src of [...srcs]) {
+    const file = parsePresentationFile(src);
+    const folder = file ? folders.get(file.pageId) : undefined;
+    if (!file || !folder || !posterUrlFor(file.name) || !existsSync(join(folder, posterNameFor(file.name)))) continue;
+    srcs.add(src.slice(0, src.length - file.name.length) + posterNameFor(file.name));
   }
   let bytes = 0;
   for (const src of srcs) {
