@@ -1,5 +1,5 @@
 import { assetUrl, escapeHtml } from "../lib/dom.ts";
-import { PAGE_ENTER_EVENT, PAGE_FILES_EVENT, PRESENT_LAYOUT_EVENT, presentationFileUrl } from "../shared/presentation-files.ts";
+import { PAGE_ENTER_EVENT, PAGE_FILES_EVENT, PRESENT_LAYOUT_EVENT, presentationFileUrl, presentationProjectEnabled } from "../shared/presentation-files.ts";
 import { isPageMedia, removePageFile, uploadPageFiles, type PageFileSource } from "./presentation-project.ts";
 import type { CaptureRecord } from "../shared/index-types.ts";
 import { sortCaptures } from "../shared/filter.ts";
@@ -171,7 +171,9 @@ import {
 } from "../shared/studio-shapes.ts";
 import { confirmProceed, FIGMA_PAGE_URL_KEY, openFigmaMcpDialog, showToast } from "../feedback.ts";
 import { FIGMA_IMAGE_MAX, FIGMA_NOT_CONNECTED, figmaBridgeReady, parseFigmaPageUrl, sendCardToFigma } from "../shared/figma-bridge.ts";
-import { uploadBySrc } from "../studio-uploads.ts";
+import { addMotionUpload, uploadBySrc, uploadPosterUrl } from "../studio-uploads.ts";
+import { getMotionClip } from "../motion-clip.ts";
+import { motionFileName, posterNameFor, posterUrlFor } from "../shared/motions.ts";
 
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
@@ -441,8 +443,8 @@ let stopStudioKeys: (() => void) | null = null;
 let layerClipboard: StudioLayer[] = [];
 let clipboardGroups: string[][] = [];
 let layerClipboardOwner: StudioState | null = null;
-/** Which copy happened last, so a page paste does not swallow an object paste. */
-let clipKind: "page" | "layer" | null = null;
+/** Which copy happened last, so a page paste does not swallow an object paste (or a video copied in Motions). */
+let clipKind: "page" | "layer" | "motion" | null = null;
 let layerMenu: HTMLElement | null = null;
 let sourceMenu: HTMLElement | null = null;
 let closeSourceMenu: (() => void) | null = null;
@@ -453,6 +455,13 @@ export function notePageClip(): void {
 
 export function pageClipIsCurrent(): boolean {
   return clipKind === "page";
+}
+
+/** Motions copied a video, so the next ⌘V in the editor pastes it. */
+export function noteMotionClip(): void {
+  clipKind = "motion";
+  // Drop any picture still on the system clipboard, so the next paste is this video.
+  void navigator.clipboard?.writeText("\u200b").catch(() => undefined);
 }
 const LONG_PRESS_MS = 500;
 const PASTE_OFFSET = 20;
@@ -469,10 +478,23 @@ const imageCache = new Map<string, HTMLImageElement>();
 const imageWaiters = new Map<string, Promise<HTMLImageElement>>();
 const dataUrlCache = new Map<string, Promise<string>>();
 
-/** First frame of a video, stored like a still so a dropped clip can sit at its own pixel size. */
-function captureVideoPoster(url: string): Promise<HTMLImageElement | null> {
+/**
+ * First frame of a video, stored like a still so a dropped clip can sit at its own pixel size. A video pasted from
+ * Motions has a poster beside it (its settled frame), which is used instead: its first frame is often still empty.
+ */
+async function captureVideoPoster(url: string): Promise<HTMLImageElement | null> {
   const cached = imageCache.get(url);
-  if (cached?.complete && cached.naturalWidth > 0) return Promise.resolve(cached);
+  if (cached?.complete && cached.naturalWidth > 0) return cached;
+  const posterUrl = uploadPosterUrl(url) ?? posterUrlFor(url);
+  const poster = posterUrl ? await loadImage(posterUrl).catch(() => null) : null;
+  if (poster) {
+    imageCache.set(url, poster);
+    return poster;
+  }
+  return firstVideoFrame(url);
+}
+
+function firstVideoFrame(url: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const video = document.createElement("video");
     video.muted = true;
@@ -782,6 +804,11 @@ export function syncGraphicLibrary(captures: CaptureRecord[]): void {
     label: capture.title,
     kind: "theme",
   }));
+}
+
+/** The graphic library as editor sources (Motions picks pictures from it too). */
+export function graphicLibraryItems(): readonly StudioSource[] {
+  return graphicLibrary;
 }
 
 function libraryHit(src: string): StudioSource | undefined {
@@ -7707,7 +7734,7 @@ export function bindStudio(
     paint();
   });
 
-  const insertImage = async (src: string, at: Point, placement: "frame" | "native" = "frame") => {
+  const insertImage = async (src: string, at: Point, placement: "frame" | "native" = "frame", play?: MediaPlay) => {
     const url = srcUrl(src);
     const video = sourceOf(src)?.kind === "video" || isVideoSrc(src);
     const image = url ? (video ? await captureVideoPoster(url) : await loadImage(url).catch(() => null)) : null;
@@ -7726,7 +7753,7 @@ export function bindStudio(
     const radius = kind === "speaker" || kind === "logo" ? 0 : IMAGE_RADIUS_DEFAULT;
     commitLayers(() => {
       const width = clampImageWidth(wanted);
-      const layer: ImageLayer = { id: newLayerId(), kind: "image", src, x: 0, y: 0, width, radius, crop: null };
+      const layer: ImageLayer = { id: newLayerId(), kind: "image", src, x: 0, y: 0, width, radius, crop: null, ...(play ? { play } : {}) };
       Object.assign(layer, clampLayerPosition(layer, at.x - width / 2, at.y - (width * aspect) / 2));
       state.layers.push(layer);
       selected.clear();
@@ -8069,6 +8096,18 @@ export function bindStudio(
   document.addEventListener("pointerdown", onDropperPointer, true);
   let pasteShift = 0;
   let pasteAnchor = "";
+  /** Under the pointer (or the card's middle); each paste in the same place moves 24px further. */
+  const nextPastePoint = (): Point => {
+    const anchor = lastPointer ? `${Math.round(lastPointer.x)}:${Math.round(lastPointer.y)}` : "center";
+    if (anchor !== pasteAnchor) {
+      pasteAnchor = anchor;
+      pasteShift = 0;
+    }
+    const base = lastPointer ?? { x: state.cardWidth / 2, y: state.cardHeight / 2 };
+    const at = { x: base.x + pasteShift, y: base.y + pasteShift };
+    pasteShift = (pasteShift + 24) % 240;
+    return at;
+  };
   const placePastedMedia = async (files: File[]) => {
     const named = files.flatMap((file, index) => {
       const next = namedPasteFile(file, index);
@@ -8078,14 +8117,7 @@ export function bindStudio(
       showToast("이 형식의 그림은 붙여 넣을 수 없습니다.");
       return;
     }
-    const anchor = lastPointer ? `${Math.round(lastPointer.x)}:${Math.round(lastPointer.y)}` : "center";
-    if (anchor !== pasteAnchor) {
-      pasteAnchor = anchor;
-      pasteShift = 0;
-    }
-    const base = lastPointer ?? { x: state.cardWidth / 2, y: state.cardHeight / 2 };
-    const at = { x: base.x + pasteShift, y: base.y + pasteShift };
-    pasteShift = (pasteShift + 24) % 240;
+    const at = nextPastePoint();
     const pageId = config.pageId;
     const media = named.filter(isPageMedia);
     if (!pageId || media.length === 0) {
@@ -8100,6 +8132,34 @@ export function bindStudio(
       offset += 24;
     }
   };
+  /**
+   * The video copied in Motions, at its own size. On localhost it goes into the page folder with its poster beside it
+   * (<name>.poster.png, the still that PDF, PPTX, and thumbnails show); on the deployed site it is kept in this browser.
+   */
+  const pasteMotion = async () => {
+    const clip = getMotionClip();
+    if (!clip) return;
+    const at = nextPastePoint();
+    const name = motionFileName(clip.presetId, new Date(), clip.ext);
+    let src: string | null = null;
+    if (presentationProjectEnabled()) {
+      const pageId = config.pageId;
+      const project = config.project ?? "";
+      const [saved] = pageId ? await uploadPageFiles(project, pageId, [new File([clip.blob], name, { type: clip.type })]) : [];
+      if (saved && pageId) {
+        await uploadPageFiles(project, pageId, [new File([clip.poster], posterNameFor(saved.name), { type: "image/png" })]);
+        src = saved.src;
+      }
+    } else {
+      src = await addMotionUpload(clip.blob, name, clip.poster);
+    }
+    if (!src) {
+      showToast("모션 영상을 붙여 넣지 못했습니다.");
+      return;
+    }
+    await insertImage(src, at, "native", clip.loop ? undefined : "once");
+    showToast("모션 영상을 붙여 넣었습니다.");
+  };
   const onPaste = (event: ClipboardEvent) => {
     if (!canvas.isConnected || exporting) return;
     if (document.documentElement.classList.contains("is-presenting")) return;
@@ -8113,6 +8173,12 @@ export function bindStudio(
       return;
     }
     if (window.getSelection()?.toString()) return;
+    if (clipKind === "motion") {
+      if (!getMotionClip() || state.code.trim()) return;
+      event.preventDefault();
+      void pasteMotion();
+      return;
+    }
     if (layerClipboard.length > 0 && clipKind !== "page") {
       event.preventDefault();
       pasteLayers(lastPointer);

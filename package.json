@@ -11,7 +11,8 @@
     "figma-bridge": "tsx scripts/figma-bridge.ts",
     "test:studio": "tsx scripts/test-studio.ts",
     "test:conference": "tsx scripts/test-conference.ts",
-    "test:projects": "tsx scripts/test-projects.ts"
+    "test:projects": "tsx scripts/test-projects.ts",
+    "test:motions": "tsx scripts/test-motions.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
