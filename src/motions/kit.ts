@@ -74,9 +74,11 @@ export const kit = {
 
   /* ---------- text ---------- */
 
+  /** One of the three Motions fonts, or a whole font stack as given (a Presentation text layer's own). */
   fontFamily(id: string): string {
     if (id === "pretendard") return '"Pretendard Variable", Pretendard, system-ui, sans-serif';
     if (id === "roboto") return "Roboto, system-ui, sans-serif";
+    if (id.includes(",") || id.includes('"')) return id;
     return "Montserrat, system-ui, sans-serif";
   },
 
@@ -84,7 +86,7 @@ export const kit = {
   font(values: MotionValues, size: number, strong = false): string {
     const base = this.num(values, "weight", 300);
     const weight = strong ? this.num(values, "strongWeight", base) : base;
-    return `${Math.round(weight)} ${Math.round(size * 100) / 100}px ${this.fontFamily(String(values.font))}`;
+    return `${values.italic === true ? "italic " : ""}${Math.round(weight)} ${Math.round(size * 100) / 100}px ${this.fontFamily(String(values.font))}`;
   },
 
   measurer(values: MotionValues): Measure {
@@ -304,10 +306,10 @@ export const kit = {
   },
 
   /** Text layout, the images in slot order (repeated to the count the preset uses), and the timeline. */
-  /** strong: the 강조 단어 of `text` (word indexes). */
-  prepare(preset: MotionPreset, values: MotionValues, text: string, images: CanvasImageSource[], strong: readonly number[] = []): MotionPrepared {
-    let layout: MotionLayout | null = null;
-    if (preset.kind === "typography") {
+  /** strong: the 강조 단어 of `text` (word indexes). given: letters already placed (a Presentation text layer's), used as they are. */
+  prepare(preset: MotionPreset, values: MotionValues, text: string, images: CanvasImageSource[], strong: readonly number[] = [], given: MotionLayout | null = null): MotionPrepared {
+    let layout: MotionLayout | null = preset.kind === "typography" ? given : null;
+    if (preset.kind === "typography" && !layout) {
       layout = this.layout(
         text,
         {

@@ -23,14 +23,13 @@ import {
   factoryMotionValues,
   motionDefaults,
   motionGroups,
+  motionParams,
   motionStrong,
   motionText,
   motionWords,
-  paramShown,
   type MotionDefaults,
   type MotionKind,
   type MotionOutput,
-  type MotionParam,
   type MotionPrepared,
   type MotionPreset,
   type MotionValue,
@@ -39,6 +38,7 @@ import {
 import { clearMotionsMemory, presetValues, readMotionsMemory, savePresetValues, writeMotionsMemory, type MotionBackdrop } from "../motions-store.ts";
 import { saveMotionDefaults } from "../motion-defaults.ts";
 import { getMotionClip, motionClipLabel, setMotionClip } from "../motion-clip.ts";
+import { bindParamFields, paintFill, paramField, tokenColors } from "./motion-fields.ts";
 import {
   addMotionFile,
   conferenceAssets,
@@ -104,26 +104,6 @@ const BACKDROPS: { id: MotionBackdrop; label: string }[] = [
   { id: "light", label: "라이트" },
 ];
 
-/** Design-system colors offered beside every color field, read from tokens.css for the current mode. */
-const TOKENS = ["--primary", "--soft", "--mid", "--deep", "--tint", "--accent", "--mute", "--warning", "--bg", "--fg"];
-
-function tokenColors(): string[] {
-  const style = getComputedStyle(document.documentElement);
-  const probe = document.createElement("canvas").getContext("2d");
-  return [
-    ...new Set(
-      TOKENS.flatMap((name) => {
-        const value = style.getPropertyValue(name).trim();
-        if (!probe || !value) return [];
-        probe.fillStyle = "#000000";
-        probe.fillStyle = value;
-        const hex = String(probe.fillStyle);
-        return /^#[0-9a-f]{6}$/i.test(hex) ? [hex.toUpperCase()] : [];
-      }),
-    ),
-  ];
-}
-
 function backdropOf(mode: Mode): MotionBackdrop {
   return readMotionsMemory().backdrop ?? (mode === "light" ? "light" : "dark");
 }
@@ -131,73 +111,6 @@ function backdropOf(mode: Mode): MotionBackdrop {
 /** Montserrat and Roboto have no Hangul, so a Korean sentence is drawn in the system font unless Pretendard is picked. */
 function fontHintShown(text: string, values: MotionValues): boolean {
   return /[\u3131-\u318E\uAC00-\uD7A3]/.test(text) && values.font !== "pretendard";
-}
-
-function format(value: number): string {
-  return String(Math.round(value * 1000) / 1000);
-}
-
-/** The filled part of a slider track, as the editor paints it. */
-function paintFill(range: HTMLInputElement): void {
-  const min = Number(range.min);
-  const max = Number(range.max);
-  const pct = max > min ? ((Number(range.value) - min) / (max - min)) * 100 : 0;
-  range.style.setProperty("--range-fill", `${Math.min(100, Math.max(0, pct))}%`);
-}
-
-/** One controller, built from its schema with the editor's own field, slider, and swatch classes. */
-function paramField(param: MotionParam, values: MotionValues, swatches: string[]): string {
-  const id = `motion-param-${param.id}`;
-  const hidden = paramShown(param, values) ? "" : " hidden";
-  const label = escapeHtml(param.label);
-  if (param.type === "range") {
-    const value = format(Number(values[param.id]));
-    const unit = param.unit ? ` <span class="motion-field__unit">${escapeHtml(param.unit)}</span>` : "";
-    const step = format(param.step);
-    return `
-      <div class="studio__field motion-field" data-param="${param.id}"${hidden}>
-        <label for="${id}">${label}${unit}</label>
-        <div class="studio__radius">
-          <input type="range" id="${id}" data-param-range="${param.id}" min="${param.min}" max="${param.max}" step="${param.step}" value="${value}" />
-          <span class="studio__steps">
-            <button type="button" class="studio__step" data-param-step="${param.id}" data-dir="-1" aria-label="${label} 줄이기" title="${step} 줄이기 · Shift ×10">−</button>
-            <button type="button" class="studio__step" data-param-step="${param.id}" data-dir="1" aria-label="${label} 키우기" title="${step} 키우기 · Shift ×10">+</button>
-          </span>
-          <input type="number" class="studio__control studio__control--number" data-param-number="${param.id}" min="${param.min}" max="${param.max}" step="${param.step}" value="${value}" aria-label="${label} 수치" />
-        </div>
-      </div>`;
-  }
-  if (param.type === "select") {
-    const options = param.options
-      .map((option) => `<option value="${escapeHtml(option.value)}"${option.value === values[param.id] ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
-      .join("");
-    return `
-      <div class="studio__field motion-field" data-param="${param.id}"${hidden}>
-        <label for="${id}">${label}</label>
-        <select id="${id}" class="studio__control" data-param-select="${param.id}">${options}</select>
-      </div>`;
-  }
-  if (param.type === "color") {
-    const value = escapeHtml(String(values[param.id]));
-    const chips = swatches
-      .map((hex) => `<button type="button" class="studio__palette-swatch" data-param-swatch="${param.id}" data-color="${hex}" style="background:${hex}" aria-label="${label} ${hex}" title="${hex}"></button>`)
-      .join("");
-    return `
-      <div class="studio__field motion-field" data-param="${param.id}"${hidden}>
-        <label for="${id}">${label}</label>
-        <div class="studio__color">
-          <input type="color" id="${id}" class="studio__color-picker studio__color-picker--text" data-param-color="${param.id}" value="${value.toLowerCase()}" />
-          <input type="text" class="studio__control" data-param-hex="${param.id}" value="${value}" maxlength="7" spellcheck="false" aria-label="${label} hex" />
-        </div>
-        <div class="studio__palette">${chips}</div>
-      </div>`;
-  }
-  const on = values[param.id] === true;
-  return `
-    <div class="studio__field motion-field motion-field--toggle" data-param="${param.id}"${hidden}>
-      <span id="${id}-label">${label}</span>
-      <button type="button" class="motion-switch" id="${id}" role="switch" aria-checked="${on}" aria-labelledby="${id}-label" data-param-toggle="${param.id}"><span class="motion-switch__knob"></span></button>
-    </div>`;
 }
 
 /** The sentence's words as toggles: a pressed word is a 강조 단어. */
@@ -330,6 +243,7 @@ export function renderMotions(view: MotionsView): string {
           <div class="motions__defaults">
             <button type="button" class="button button--secondary" id="motion-reset">기본값으로</button>
             <button type="button" class="button button--secondary" id="motion-set-default">이 값을 기본값으로 설정</button>
+            <button type="button" class="button button--secondary" id="motion-set-all-default">${MOTION_KIND_LABEL[preset.kind]} 전체 기본값으로 설정</button>
             <button type="button" class="button button--secondary" id="motion-reset-all">완전 리셋</button>
           </div>
         </div>
@@ -551,14 +465,6 @@ export function bindMotions(root: HTMLElement, view: MotionsView, onChange: () =
   drawThumbs();
 
   /* ---------- controllers ---------- */
-  const shown = () => {
-    for (const group of motionGroups(state.preset)) {
-      for (const param of group.params) {
-        const field = section.querySelector<HTMLElement>(`[data-param="${param.id}"]`);
-        if (field) field.hidden = !paramShown(param, state.values);
-      }
-    }
-  };
   const syncSlotsUsed = () => {
     const used = usedSlots(state.preset, state.values, state.refs);
     section.querySelectorAll<HTMLElement>("[data-slot]").forEach((slot) => {
@@ -572,7 +478,6 @@ export function bindMotions(root: HTMLElement, view: MotionsView, onChange: () =
   const apply = (id: string, value: MotionValue) => {
     state.values[id] = value;
     savePresetValues(state.preset, state.values, view.mode);
-    shown();
     if (id === "font") syncFontHint();
     if (id === "loop") $("#motion-loop")?.setAttribute("aria-pressed", String(value !== false));
     if (state.preset.kind === "image") syncSlotsUsed();
@@ -584,73 +489,7 @@ export function bindMotions(root: HTMLElement, view: MotionsView, onChange: () =
     }
     refreshThumbs();
   };
-  const params = new Map(motionGroups(preset).flatMap((group) => group.params.map((param) => [param.id, param] as const)));
-  const snap = (param: Extract<MotionParam, { type: "range" }>, value: number) => {
-    const clamped = Math.min(param.max, Math.max(param.min, value));
-    return Number((param.min + Math.round((clamped - param.min) / param.step) * param.step).toFixed(6));
-  };
-  const setRange = (id: string, value: number) => {
-    const range = section.querySelector<HTMLInputElement>(`[data-param-range="${id}"]`);
-    const number = section.querySelector<HTMLInputElement>(`[data-param-number="${id}"]`);
-    if (range) {
-      range.value = format(value);
-      paintFill(range);
-    }
-    if (number) number.value = format(value);
-    apply(id, value);
-  };
-  section.querySelectorAll<HTMLInputElement>("[data-param-range]").forEach((input) => {
-    paintFill(input);
-    input.addEventListener("input", () => setRange(input.dataset.paramRange ?? "", Number(input.value)));
-  });
-  section.querySelectorAll<HTMLInputElement>("[data-param-number]").forEach((input) => {
-    const id = input.dataset.paramNumber ?? "";
-    const param = params.get(id);
-    input.addEventListener("change", () => {
-      if (param?.type !== "range") return;
-      setRange(id, Number.isFinite(Number(input.value)) && input.value.trim() !== "" ? snap(param, Number(input.value)) : param.default);
-    });
-  });
-  section.querySelectorAll<HTMLButtonElement>("[data-param-step]").forEach((button) => {
-    const id = button.dataset.paramStep ?? "";
-    const param = params.get(id);
-    button.addEventListener("click", (event) => {
-      if (param?.type !== "range") return;
-      setRange(id, snap(param, Number(state.values[id]) + Number(button.dataset.dir) * param.step * (event.shiftKey ? 10 : 1)));
-    });
-  });
-  section.querySelectorAll<HTMLSelectElement>("[data-param-select]").forEach((select) => {
-    select.addEventListener("change", () => apply(select.dataset.paramSelect ?? "", select.value));
-  });
-  const setColor = (id: string, hex: string) => {
-    const value = hex.toUpperCase();
-    const picker = section.querySelector<HTMLInputElement>(`[data-param-color="${id}"]`);
-    const field = section.querySelector<HTMLInputElement>(`[data-param-hex="${id}"]`);
-    if (picker) picker.value = value.toLowerCase();
-    if (field && document.activeElement !== field) field.value = value;
-    apply(id, value);
-  };
-  section.querySelectorAll<HTMLInputElement>("[data-param-color]").forEach((picker) => {
-    picker.addEventListener("input", () => setColor(picker.dataset.paramColor ?? "", picker.value));
-  });
-  section.querySelectorAll<HTMLInputElement>("[data-param-hex]").forEach((field) => {
-    field.addEventListener("change", () => {
-      const id = field.dataset.paramHex ?? "";
-      const hex = field.value.trim().replace(/^([^#])/, "#$1");
-      if (/^#[0-9a-f]{6}$/i.test(hex)) setColor(id, hex);
-      field.value = String(state.values[id]);
-    });
-  });
-  section.querySelectorAll<HTMLButtonElement>("[data-param-swatch]").forEach((chip) => {
-    chip.addEventListener("click", () => setColor(chip.dataset.paramSwatch ?? "", chip.dataset.color ?? "#FFFFFF"));
-  });
-  section.querySelectorAll<HTMLButtonElement>("[data-param-toggle]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const next = button.getAttribute("aria-checked") !== "true";
-      button.setAttribute("aria-checked", String(next));
-      apply(button.dataset.paramToggle ?? "", next);
-    });
-  });
+  bindParamFields(section, motionParams(preset), state.values, apply);
   $("#motion-loop")?.addEventListener("click", () => {
     const next = state.values.loop === false;
     section.querySelector<HTMLButtonElement>('[data-param-toggle="loop"]')?.setAttribute("aria-checked", String(next));
@@ -666,37 +505,53 @@ export function bindMotions(root: HTMLElement, view: MotionsView, onChange: () =
     onChange();
     showToast(`${state.preset.name}을 기본값으로 되돌렸습니다.`);
   });
+  /**
+   * 이 값을 기본값으로 설정 (one preset) and 전체 기본값으로 설정 (every preset of this sub-tab): their values as kept in
+   * this browser, with the sentence and 강조 단어 (typography) or the image slots (image), into presentation/motions.json.
+   */
+  const setDefaults = async (items: readonly MotionPreset[], question: string, done: string) => {
+    if (!(await confirmProceed(question))) return;
+    const current = motionDefaults();
+    const next: MotionDefaults = { ...current, values: { ...current.values } };
+    const kept = new Map(items.map((item) => [item, item.id === state.preset.id ? state.values : presetValues(item, view.mode)] as const));
+    for (const [item, values] of kept) {
+      const own = changedMotionValues(values, factoryMotionValues(item, view.mode));
+      if (Object.keys(own).length) next.values[item.id] = own;
+      else delete next.values[item.id];
+    }
+    let skipped = false;
+    if (state.preset.kind === "typography") {
+      if (state.text === MOTION_DEFAULT_TEXT) delete next.text;
+      else next.text = state.text;
+      next.strong = [...state.strong];
+    } else {
+      // A file of mine lives only in this browser, so it cannot be a default.
+      next.slots = state.refs.map((ref) => {
+        if (!ref?.startsWith("file:")) return ref;
+        skipped = true;
+        return null;
+      });
+    }
+    if (!(await saveMotionDefaults(next))) {
+      showToast("기본값을 저장하지 못했습니다. 로컬 개발 서버에서만 설정할 수 있습니다.");
+      return;
+    }
+    // This browser keeps only what differs from the new defaults.
+    for (const [item, values] of kept) savePresetValues(item, values, view.mode);
+    showToast(skipped ? `${done} 내 파일 칸은 기본값에 넣지 않았습니다.` : done);
+  };
+  const shared = () => (state.preset.kind === "typography" ? "문장·강조 단어" : "이미지 슬롯");
   $("#motion-set-default")?.addEventListener("click", () => {
-    void (async () => {
-      const typography = state.preset.kind === "typography";
-      const what = typography ? "지금 값과 문장·강조 단어를" : "지금 값과 이미지 슬롯을";
-      if (!(await confirmProceed(`${state.preset.name}의 ${what} 기본값으로 설정하시겠습니까?`))) return;
-      const current = motionDefaults();
-      const next: MotionDefaults = { ...current, values: { ...current.values } };
-      const own = changedMotionValues(state.values, factoryMotionValues(state.preset, view.mode));
-      if (Object.keys(own).length) next.values[state.preset.id] = own;
-      else delete next.values[state.preset.id];
-      let skipped = false;
-      if (typography) {
-        if (state.text === MOTION_DEFAULT_TEXT) delete next.text;
-        else next.text = state.text;
-        next.strong = [...state.strong];
-      } else {
-        // A file of mine lives only in this browser, so it cannot be a default.
-        next.slots = state.refs.map((ref) => {
-          if (!ref?.startsWith("file:")) return ref;
-          skipped = true;
-          return null;
-        });
-      }
-      if (!(await saveMotionDefaults(next))) {
-        showToast("기본값을 저장하지 못했습니다. 로컬 개발 서버에서만 설정할 수 있습니다.");
-        return;
-      }
-      // This browser keeps only what differs from the new defaults.
-      savePresetValues(state.preset, state.values, view.mode);
-      showToast(skipped ? "기본값으로 설정하였습니다. 내 파일 칸은 기본값에 넣지 않았습니다." : "기본값으로 설정하였습니다.");
-    })();
+    void setDefaults([state.preset], `${state.preset.name}의 지금 값과 ${shared()}${state.preset.kind === "typography" ? "를" : "을"} 기본값으로 설정하시겠습니까?`, "기본값으로 설정하였습니다.");
+  });
+  $("#motion-set-all-default")?.addEventListener("click", () => {
+    const label = MOTION_KIND_LABEL[state.preset.kind];
+    const items = motionPresetsOf(state.preset.kind);
+    void setDefaults(
+      items,
+      `${label} 프리셋 ${items.length}종의 지금 값과 ${shared()}${state.preset.kind === "typography" ? "를" : "을"} 모두 기본값으로 설정하시겠습니까?`,
+      `${label} 전체를 기본값으로 설정하였습니다.`,
+    );
   });
   $("#motion-reset-all")?.addEventListener("click", () => {
     void (async () => {

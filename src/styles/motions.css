@@ -46,8 +46,8 @@
 }
 
 .motions__tab[aria-current="page"] {
-  background: var(--soft);
-  color: var(--on-soft);
+  background: var(--selected);
+  color: var(--on-selected);
   border-color: transparent;
 }
 
@@ -193,8 +193,8 @@
 }
 
 #motion-loop[aria-pressed="true"] {
-  background: var(--soft);
-  color: var(--on-soft);
+  background: var(--selected);
+  color: var(--on-selected);
   border-color: transparent;
 }
 
@@ -341,8 +341,8 @@
 
 .motion-word[aria-pressed="true"] {
   border-color: transparent;
-  background: var(--soft);
-  color: var(--on-soft);
+  background: var(--selected);
+  color: var(--on-selected);
   font-weight: 700;
 }
 
@@ -551,5 +551,193 @@
     overflow: visible;
     border-left: 0;
     border-top: var(--line-width) solid var(--line-color);
+  }
+}
+
+/* ---------- Presentation editor: a motion on a text or picture layer ---------- */
+.studio__layer-motion {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.studio__layer-motion canvas {
+  position: absolute;
+  display: block;
+  max-width: none;
+}
+
+.studio__layer-motion-btn {
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--studio-ink-dark) 28%, transparent);
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translateY(calc(-100% - 10px));
+}
+
+.studio__layer-motion-btn[data-side="below"] {
+  transform: translateY(10px);
+}
+
+.studio__layer-motion-btn[hidden] {
+  display: none;
+}
+
+.studio__layer-motion-btn .studio__icon {
+  width: 15px;
+  height: 15px;
+}
+
+html.is-presenting .studio__layer-motion-btn {
+  display: none;
+}
+
+/* The popup: presets, the preview on the layer itself, and the controllers */
+.layer-motion {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(1120px, 100%);
+  max-height: min(820px, 92vh);
+  font-size: 14px;
+}
+
+.layer-motion__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.layer-motion__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.layer-motion__body {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 236px minmax(0, 1fr) 300px;
+  gap: 16px;
+  min-height: 0;
+}
+
+.layer-motion__list {
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.layer-motion__card {
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  border: var(--line-width) solid var(--line-color);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.layer-motion__card[aria-pressed="true"] {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.layer-motion__card canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 6px;
+  background: repeating-conic-gradient(color-mix(in srgb, var(--fg) 16%, var(--bg)) 0 25%, var(--bg) 0 50%) 0 0 / 16px 16px;
+}
+
+.layer-motion__card span {
+  overflow: hidden;
+  padding: 0 2px 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-motion__stage {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.layer-motion__preview {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 12px;
+  background: repeating-conic-gradient(color-mix(in srgb, var(--fg) 16%, var(--bg)) 0 25%, var(--bg) 0 50%) 0 0 / 24px 24px;
+  box-shadow: inset 0 0 0 var(--line-width) var(--line-color);
+}
+
+.layer-motion__preview canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.layer-motion__summary {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.layer-motion__controls {
+  min-height: 0;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.layer-motion__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.layer-motion__spacer {
+  flex: 1;
+}
+
+@media (max-width: 1024px) {
+  .layer-motion__body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .layer-motion__list {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    overflow: visible;
+  }
+
+  .layer-motion__preview {
+    width: min(100%, 50vh);
+    margin: 0 auto;
+  }
+
+  .layer-motion__controls {
+    overflow: visible;
   }
 }

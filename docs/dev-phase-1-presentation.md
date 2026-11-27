@@ -49,7 +49,7 @@
 
 ### 페이지와 덱
 
-- 유형: **유형 1**은 사진·디바이더(저장된 `presentation-type1.json`), **유형 2**는 다크 타이틀·단어, **유형 3**은 라이트 아젠다·모자이크(저장된 `presentation-type3.json`). 앱 라이트·다크 모드에 따라 유형 2·3의 글자·바탕색이 바뀐다. 유형 1은 그림을 유지한다.
+- 유형: **유형 1**은 사진·디바이더(저장된 `presentation-type1.json`), **유형 2**는 다크 타이틀·단어, **유형 3**은 `2026 브루넬 연말행사` page 7(워크플로우 제목 + 그림, 저장된 `presentation-type3.json`). 유형 3의 그림은 `public/assets/presentation/type3-workflow.png`를 `tpl:type3`로 가리켜 어느 프로젝트·샘플·배포 사이트에서도 보인다(2026-11-28. 전에는 page 7 폴더의 파일을 가리켜 샘플에 다른 그림이 나왔다). 앱 라이트·다크 모드에 따라 유형 2·3의 글자·바탕색이 바뀐다. 유형 1은 그림을 유지한다.
 - 페이지 추가·복제·삭제·이름 바꾸기(더블클릭)·끌어서 순서 바꾸기. 마지막 한 장은 지울 수 없다.
 - Shift+클릭 범위 선택, 블록 끌기, Cmd+X·C·V 잘라내기·복사·붙여넣기, Delete 삭제.
 - 되돌리기: 슬라이드 안 편집은 페이지별 스튜디오 히스토리, 페이지 추가·삭제·이동·이름은 덱 히스토리(Cmd+Z).
@@ -130,6 +130,7 @@ type PresentationPage = {
 | IndexedDB | `ax-studio-uploads` | 브라우저에 올린 그림 |
 | 파일 | `presentation/project 1/deck.json` | 기본 덱(18장). 프로젝트마다 `deck.json`이 있다 |
 | 파일 | `src/shared/presentation-type1.json`, `presentation-type3.json` | 유형 1·3 새 페이지 원본 |
+| 파일 | `public/assets/presentation/type3-workflow.png` | 유형 3 그림(`tpl:type3`) |
 | 파일 | `presentation/<프로젝트 폴더>/pages/page N/` | 페이지 폴더(파일과 `page.json`) |
 | 파일 | `public/data/conference.json`, `public/assets/conference/` | Slide 배경, 연사 4명, 로고 12개 |
 | 파일 | `public/data/index.json` | 그래픽 라이브러리 목록 |

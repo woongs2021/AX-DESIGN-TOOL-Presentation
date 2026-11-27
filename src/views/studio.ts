@@ -103,6 +103,11 @@ import {
   type TextKind,
   type TextLayer,
 } from "../shared/studio.ts";
+import { kit } from "../motions/kit.ts";
+import { findMotionPreset } from "../motions/index.ts";
+import { imageSquare, layerMotionValues, textLayout, textSquare } from "../motions/layer.ts";
+import type { MotionPrepared, MotionPreset, MotionValues } from "../shared/motions.ts";
+import { closeLayerMotion, openLayerMotion, type LayerMotionSetup } from "./layer-motion.ts";
 import {
   CONFERENCE_PRESETS,
   conferenceSrc,
@@ -111,7 +116,7 @@ import {
   type ConferenceIndex,
 } from "../shared/conference.ts";
 import { cardPdf } from "../shared/card-pdf.ts";
-import type { SceneColor, SceneGeometry, SceneItem, ScenePathCmd, SceneVideo, SlideScene } from "../shared/slides-pptx.ts";
+import type { SceneColor, SceneGeometry, SceneItem, SceneMotion, ScenePathCmd, SceneVideo, SlideScene } from "../shared/slides-pptx.ts";
 import { GIF_LONG_EDGE, createGifEncoder, gifFrameDelays, gifSize } from "../shared/card-gif.ts";
 import {
   BLEND_LABELS,
@@ -217,6 +222,26 @@ let stopPageEnter: (() => void) | null = null;
 const enterSkip = new Set<string>();
 let enterRun = 0;
 let enterHost: HTMLElement | null = null;
+/** Layers whose motion is playing over them; the canvas skips their still meanwhile. */
+const layerMotionSkip = new Set<string>();
+let layerMotionHost: HTMLElement | null = null;
+let layerMotionRun = 0;
+let layerMotionRaf = 0;
+/** Stops the layer motions and repaints the stills (set while an editor is bound). */
+let settleLayerMotionsNow: (() => void) | null = null;
+
+function stopLayerMotions(): void {
+  layerMotionRun += 1;
+  cancelAnimationFrame(layerMotionRaf);
+  layerMotionHost?.remove();
+  layerMotionHost = null;
+  layerMotionSkip.clear();
+}
+
+/** Before the editor canvas is read as a still (a page thumbnail), the layers under a playing motion are painted again. */
+export function settleLayerMotions(): void {
+  settleLayerMotionsNow?.();
+}
 
 function stopEnter(): void {
   enterRun += 1;
@@ -598,8 +623,83 @@ const localFontUrls = import.meta.glob("../../fonts/*.{woff2,woff,ttf,otf}", {
 
 type FontChoice = { id: string; label: string; stack: string };
 
+const LAYER_MOTION_ICON =
+  '<svg class="studio__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 13.9 9 19.5 10.9 13.9 12.8 12 18.5 10.1 12.8 4.5 10.9 10.1 9Z"/><path d="M18.5 3.5v3M17 5h3"/></svg>';
+
 function textFont(layer: TextLayer, size: number, extras: FontChoice[]): string {
   return `${layer.italic ? "italic " : ""}${layer.weight} ${size}px ${fontStack(layer.fontId, extras)}`;
+}
+
+/** The preset a layer motion names, when it fits the layer (typography on text, image on a still picture). */
+function layerMotionPreset(layer: StudioLayer): MotionPreset | null {
+  const motion = layer.kind === "image" ? (isMotionSrc(layer.src) ? undefined : layer.motion) : isTextLayer(layer) ? layer.motion : undefined;
+  const preset = motion ? findMotionPreset(motion.preset) : undefined;
+  if (!preset) return null;
+  return preset.kind === (layer.kind === "image" ? "image" : "typography") ? preset : null;
+}
+
+/**
+ * What a motion plays on a layer: the effect values with what the layer sets, and the square around the layer. Text keeps
+ * the editor's own lines, font, and color; a picture is its cropped, adjusted still at its box. Null until the picture loads.
+ */
+function layerMotionSetup(layer: TextLayer | ImageLayer, state: StudioState, effect: MotionValues, image: HTMLImageElement | null): LayerMotionSetup | null {
+  if (isTextLayer(layer)) {
+    const text = layer.text.trim();
+    const probe = document.createElement("canvas").getContext("2d");
+    if (!text || !probe) return null;
+    const extras = extraFonts();
+    probe.font = textFont(layer, layer.size, extras);
+    probe.textBaseline = "top";
+    const measure = (value: string) => probe.measureText(value).width;
+    const lines = wrapText(text, Math.max(1, state.cardWidth - FONT_SIDE_MARGIN * 2), measure);
+    const lineHeight = Math.round(layer.size * 1.25);
+    const widths = lines.map(measure);
+    const widest = Math.max(0, ...widths);
+    const box = { x: layer.x, y: layer.y, w: Math.max(widest, layer.size), h: Math.max(lines.length, 1) * lineHeight };
+    const placed = lines.map((line, index) => {
+      const width = widths[index] ?? 0;
+      return { text: line, x: layer.x + (layer.align === "center" ? (widest - width) / 2 : layer.align === "right" ? widest - width : 0), y: layer.y + index * lineHeight };
+    });
+    const ascent = -(probe.measureText("Hg").alphabeticBaseline ?? -layer.size * 0.8);
+    const square = textSquare(box, layer.size);
+    return {
+      values: { ...effect, font: fontStack(layer.fontId, extras), weight: layer.weight, strongWeight: layer.weight, italic: layer.italic, color: layer.color },
+      layout: textLayout(placed, layer.size, lineHeight, ascent, measure, square),
+      images: [],
+      square,
+      text,
+    };
+  }
+  if (!image || image.naturalWidth <= 0) return null;
+  const height = imageLayerHeight(layer, image.naturalHeight / image.naturalWidth);
+  const crop = layer.crop ?? { x: 0, y: 0, w: 1, h: 1 };
+  const sw = crop.w * image.naturalWidth;
+  const sh = crop.h * image.naturalHeight;
+  const fit = Math.min(1, 1600 / Math.max(sw, sh, 1));
+  const still = document.createElement("canvas");
+  still.width = Math.max(1, Math.round(sw * fit));
+  still.height = Math.max(1, Math.round(sh * fit));
+  const ctx = still.getContext("2d");
+  if (!ctx) return null;
+  ctx.filter = imageAdjustFilter(imageAdjust(layer)) || "none";
+  ctx.drawImage(image, crop.x * image.naturalWidth, crop.y * image.naturalHeight, sw, sh, 0, 0, still.width, still.height);
+  ctx.filter = "none";
+  if (layer.tint) {
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = layer.tint;
+    ctx.fillRect(0, 0, still.width, still.height);
+  }
+  const square = imageSquare({ x: layer.x, y: layer.y, w: layer.width, h: height }, kit.num(effect, "imageSize", 72));
+  const unit = 1080 / square.side;
+  return { values: { ...effect, ratio: "original", fit: "cover", radius: Math.min(layer.radius, layer.width / 2, height / 2) * unit }, layout: null, images: [still], square, text: "" };
+}
+
+/** A layer's motion, ready to draw: its preset and setup. */
+function layerMotionPlan(layer: StudioLayer, state: StudioState, image: HTMLImageElement | null): { preset: MotionPreset; setup: LayerMotionSetup } | null {
+  const preset = layerMotionPreset(layer);
+  if (!preset || (layer.kind !== "image" && !isTextLayer(layer)) || !layer.motion) return null;
+  const setup = layerMotionSetup(layer, state, layerMotionValues(preset, layer.motion.values, {}), layer.kind === "image" ? image : null);
+  return setup ? { preset, setup } : null;
 }
 type HitBox = { id: string; kind: LayerKind; x: number; y: number; w: number; h: number };
 
@@ -1080,12 +1180,36 @@ export async function renderStudioScene(state: StudioState, config: StudioConfig
       opacity: layerOpacity(layer) / 100,
     };
   };
+  /** A layer's motion for the HTML export: its square, values, and letters or still. */
+  const sceneMotion = async (layer: StudioLayer): Promise<SceneMotion | null> => {
+    const plan = layerMotionPlan(layer, state, layer.kind === "image" ? imageOf(layer) : null);
+    if (!plan) return null;
+    const { preset, setup } = plan;
+    const still = setup.images[0];
+    return {
+      preset: preset.id,
+      values: setup.values,
+      square: setup.square,
+      opacity: layer.kind === "image" ? layerOpacity(layer) / 100 : 1,
+      ...(setup.layout ? { layout: setup.layout } : {}),
+      ...(still instanceof HTMLCanvasElement ? { image: await encode(still, "image/png") } : {}),
+      ...(isTextLayer(layer)
+        ? { face: { font: fonts.find((font) => font.id === layer.fontId)?.label ?? BUILTIN_FONTS[0].label, weight: layer.weight, italic: layer.italic, text: setup.text } }
+        : {}),
+    };
+  };
   const items: SceneItem[] = [];
   for (const layer of state.layers) {
     const item = native(layer);
     if (item === "skip") continue;
     const placed = item ?? (await cutout(layer));
     if (!placed) continue;
+    const motion = placed.kind === "text" || placed.kind === "picture" ? await sceneMotion(layer) : null;
+    if (motion && (placed.kind === "text" || placed.kind === "picture")) {
+      // A motion plays in place of the item, so the blur entrance does not.
+      items.push({ ...placed, motion });
+      continue;
+    }
     const mode = layer.enter === "once" || layer.enter === "loop" ? layer.enter : null;
     if (!mode) {
       items.push(placed);
@@ -2427,6 +2551,7 @@ export function renderStudio(state: StudioState, config: StudioConfig): string {
                 <div class="studio__pen-handles" id="studio-pen-handles"></div>
                 <div class="studio__select-frame studio__crop-frame" id="studio-crop-frame" hidden></div>
                 <div class="studio__marquee" id="studio-marquee" hidden></div>
+                <button type="button" class="studio__layer-motion-btn" id="studio-layer-motion" hidden></button>
                 ${["nw", "n", "ne", "e", "se", "s", "sw", "w"].map((edge) => `<span class="studio__handle studio__handle--crop" data-crop="${edge}" hidden></span>`).join("")}
                 <textarea class="studio__editor" id="studio-editor" rows="1" spellcheck="false" aria-label="텍스트 편집" hidden></textarea>
               </div>
@@ -2479,6 +2604,8 @@ export function bindStudio(
   stopPageEnter?.();
   stopPageEnter = null;
   stopEnter();
+  stopLayerMotions();
+  closeLayerMotion();
   stopMotion();
   commitOpenGesture?.();
   commitOpenGesture = null;
@@ -2640,6 +2767,7 @@ export function bindStudio(
   const splitter = root.querySelector<HTMLElement>("#studio-splitter");
   const studio = root.querySelector<HTMLElement>(".studio");
   const overlay = root.querySelector<HTMLElement>("#studio-overlay");
+  const layerMotionButton = root.querySelector<HTMLButtonElement>("#studio-layer-motion");
   const cropFrame = root.querySelector<HTMLElement>("#studio-crop-frame");
   const marqueeEl = root.querySelector<HTMLElement>("#studio-marquee");
   const editor = root.querySelector<HTMLTextAreaElement>("#studio-editor");
@@ -3533,6 +3661,8 @@ export function bindStudio(
     if (enterOnShow) {
       enterSkip.clear();
       for (const layer of state.layers) if (layer.enter === "once" || layer.enter === "loop") enterSkip.add(layer.id);
+      // The still waits under a motion that is about to start, so it does not flash first.
+      for (const layer of state.layers) if (layerMotionPreset(layer)) layerMotionSkip.add(layer.id);
     }
     paint();
     setImageLoading(false);
@@ -3540,6 +3670,7 @@ export function bindStudio(
     if (enterOnShow) {
       enterOnShow = false;
       void playEnter();
+      playLayerMotions();
     }
   };
 
@@ -5524,6 +5655,11 @@ export function bindStudio(
     });
     while (motionHost.childNodes.length > nodes.length) motionHost.lastChild?.remove();
   };
+  /** The motion layers as they were when their motions started; a change stops the motions so the stills show for editing. */
+  let layerMotionKey = "";
+  const motionLayersKey = () => JSON.stringify(state.layers.filter((layer) => layerMotionPreset(layer)));
+  let playLayerMotions = (): void => {};
+  let syncLayerMotionButton = (): void => {};
   paint = () => {
     if (penEdit) {
       const edited = layerById(penEdit.id);
@@ -5534,7 +5670,8 @@ export function bindStudio(
     const restartMotion = overlayEpoch !== motionEpoch;
     if (restartMotion) overlayEpoch = motionEpoch;
     syncMotion(restartMotion);
-    const paintSkip = new Set([...motionSkip, ...aboveSkip]);
+    if (layerMotionHost && !document.documentElement.classList.contains("is-presenting") && motionLayersKey() !== layerMotionKey) stopLayerMotions();
+    const paintSkip = new Set([...motionSkip, ...aboveSkip, ...layerMotionSkip]);
     hits = drawCard(canvas, state, imageOf, editing?.id ?? cropping?.id, backgroundPaint(), 1, paintSkip);
     paintCropGhost();
     paintDragStroke();
@@ -5667,7 +5804,7 @@ export function bindStudio(
     const run = enterRun;
     enterHost?.remove();
     enterHost = null;
-    const layers = state.layers.filter((layer) => layer.enter === "once" || layer.enter === "loop");
+    const layers = state.layers.filter((layer) => (layer.enter === "once" || layer.enter === "loop") && !layerMotionPreset(layer));
     if (layers.length === 0 || !root.isConnected) {
       if (enterSkip.size > 0) enterSkip.clear();
       if (root.isConnected) paint();
@@ -5783,6 +5920,147 @@ export function bindStudio(
       }
     }
   };
+  /* ---------- layer motions: a Motions preset playing on a text or a picture ---------- */
+  playLayerMotions = () => {
+    stopLayerMotions();
+    if (!scaler || !root.isConnected || state.code.trim()) {
+      paint();
+      return;
+    }
+    const run = layerMotionRun;
+    const dpr = window.devicePixelRatio || 1;
+    type Playing = { id: string; preset: MotionPreset; setup: LayerMotionSetup; prepared: MotionPrepared; ctx: CanvasRenderingContext2D; el: HTMLCanvasElement; surfaces: Map<string, HTMLCanvasElement>; loop: boolean; done: boolean };
+    const playing: Playing[] = [];
+    const host = document.createElement("div");
+    host.className = "studio__layer-motion";
+    for (const layer of state.layers) {
+      const plan = layerMotionPlan(layer, state, layer.kind === "image" ? imageOf(layer) : null);
+      if (!plan) continue;
+      const { preset, setup } = plan;
+      const el = document.createElement("canvas");
+      const side = Math.max(64, Math.min(1600, Math.round(setup.square.side * Math.max(viewScale, 0.05) * dpr)));
+      el.width = side;
+      el.height = side;
+      el.style.left = `${setup.square.x}px`;
+      el.style.top = `${setup.square.y}px`;
+      el.style.width = `${setup.square.side}px`;
+      el.style.height = `${setup.square.side}px`;
+      if (layer.kind === "image") el.style.opacity = String(layerOpacity(layer) / 100);
+      const ctx = el.getContext("2d");
+      if (!ctx) continue;
+      host.append(el);
+      const prepared = kit.prepare(preset, setup.values, setup.text, setup.images, [], setup.layout);
+      playing.push({ id: layer.id, preset, setup, prepared, ctx, el, surfaces: new Map(), loop: setup.values.loop !== false, done: false });
+    }
+    if (playing.length === 0) {
+      paint();
+      return;
+    }
+    layerMotionHost = host;
+    scaler.append(host);
+    for (const item of playing) layerMotionSkip.add(item.id);
+    layerMotionKey = motionLayersKey();
+    paint();
+    const start = performance.now();
+    const frame = (now: number) => {
+      if (run !== layerMotionRun) return;
+      const t = (now - start) / 1000;
+      let ended = false;
+      for (const item of playing) {
+        if (item.done) continue;
+        const total = Math.max(0.001, item.prepared.timeline.total);
+        if (!item.loop && t >= total) {
+          // One pass is over: the still takes its place again.
+          item.done = true;
+          item.el.remove();
+          layerMotionSkip.delete(item.id);
+          ended = true;
+          continue;
+        }
+        kit.renderFrame(item.ctx, item.preset, item.setup.values, item.prepared, item.loop ? t % total : t, item.surfaces);
+      }
+      if (playing.every((item) => item.done)) {
+        stopLayerMotions();
+        paint();
+        return;
+      }
+      if (ended) paint();
+      layerMotionRaf = requestAnimationFrame(frame);
+    };
+    layerMotionRaf = requestAnimationFrame(frame);
+  };
+  settleLayerMotionsNow = () => {
+    if (!layerMotionHost || !root.isConnected) return;
+    stopLayerMotions();
+    paint();
+  };
+  // Touching the slide stops the motions, so the stills are there to edit. A page click in the rail plays them again.
+  stage.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!layerMotionHost || document.documentElement.classList.contains("is-presenting")) return;
+      if (event.target instanceof Element && event.target.closest(".studio__layer-motion-btn")) return;
+      stopLayerMotions();
+      paint();
+    },
+    true,
+  );
+  const singleText = (): TextLayer | null => {
+    const [onlyId] = selected.size === 1 ? [...selected] : [];
+    const layer = onlyId && !isLayerLocked(state, onlyId) ? layerById(onlyId) : undefined;
+    return layer && isTextLayer(layer) && layer.text.trim() ? layer : null;
+  };
+  const layerMotionTarget = (): TextLayer | ImageLayer | null => {
+    const image = singleImage();
+    return image && !isMotionSrc(image.src) ? image : singleText();
+  };
+  syncLayerMotionButton = () => {
+    if (!layerMotionButton) return;
+    const target = !editing && !cropping && !state.code.trim() ? layerMotionTarget() : null;
+    const box = target ? hits.find((hit) => hit.id === target.id) : undefined;
+    layerMotionButton.hidden = !target || !box;
+    if (!target || !box) return;
+    const preset = layerMotionPreset(target);
+    const label = target.kind === "image" ? "이미지 모션" : "텍스트 모션";
+    layerMotionButton.innerHTML = `${LAYER_MOTION_ICON}<span>${label}${preset ? ` · ${escapeHtml(preset.name)}` : ""}</span>`;
+    layerMotionButton.title = preset ? `${label}: ${preset.name}. 눌러서 바꾸기` : `${label} 고르기`;
+    const above = box.y * viewScale > 48;
+    layerMotionButton.dataset.side = above ? "above" : "below";
+    placeAt(layerMotionButton, box.x, above ? box.y : box.y + box.h);
+  };
+  const openLayerMotionFor = (layer: TextLayer | ImageLayer) => {
+    stopLayerMotions();
+    paint();
+    const image = layer.kind === "image" ? imageOf(layer) : null;
+    openLayerMotion({
+      subject: {
+        kind: layer.kind === "image" ? "image" : "typography",
+        title: layer.kind === "image" ? "이미지 모션" : "텍스트 모션",
+        setup: (_preset, values) => layerMotionSetup(layer, state, { ...values, background: "transparent" }, image),
+      },
+      motion: layer.motion ?? null,
+      onApply: (motion) => {
+        const changed = recordChange(() => {
+          if (motion) {
+            layer.motion = motion;
+            return true;
+          }
+          if (!layer.motion) return false;
+          delete layer.motion;
+          return true;
+        });
+        if (!changed) return;
+        void redraw().then(() => playLayerMotions());
+        showToast(motion ? "모션을 적용했습니다. 페이지를 다시 누르면 처음부터 재생합니다." : "모션을 없앴습니다.");
+      },
+    });
+  };
+  layerMotionButton?.addEventListener("pointerdown", (event) => event.stopPropagation());
+  layerMotionButton?.addEventListener("click", () => {
+    const target = layerMotionTarget();
+    if (target) openLayerMotionFor(target);
+  });
+
   const setEnter = (mode: LayerEnter) => {
     const picked = enterTargets();
     if (picked.length === 0) return;
@@ -5850,6 +6128,7 @@ export function bindStudio(
       motionEpoch += 1;
       syncVideoLoop();
       void playEnter();
+      playLayerMotions();
     };
     document.addEventListener(PAGE_ENTER_EVENT, onPageEnter);
     stopPageEnter = () => document.removeEventListener(PAGE_ENTER_EVENT, onPageEnter);
@@ -6117,6 +6396,7 @@ export function bindStudio(
     return count;
   };
   syncOverlay = () => {
+    syncLayerMotionButton();
     const visible = !editing && !cropping && !state.code.trim();
     const shown = new Set<string>();
     const outlines = visible ? selectionOutlines(state, selected, hits) : [];

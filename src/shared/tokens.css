@@ -6,6 +6,8 @@
  * Mode: light | dark (data-mode).
  *
  * --on-* tokens are mode-independent ink for colored surfaces.
+ * --selected / --on-selected: the neutral gray of a selected chip, tab, or toggle, per mode.
+ * --neutral: a mid gray for quiet icons, readable on both modes.
  * Soft/tint surfaces must never inherit --fg for body text.
  *
  * Accessibility note: design-system muted/stroke alphas of 0.6/0.4 fail
@@ -32,6 +34,7 @@ html[data-theme="cool"] {
   --on-warning: #fcfcff;
   --studio-ink-dark: #000000;
   --studio-ink-light: #ffffff;
+  --neutral: #8b8b94;
 }
 
 html[data-mode="light"],
@@ -42,6 +45,8 @@ html[data-mode="light"],
   --stroke: rgba(1, 1, 2, 0.72);
   --focus-ring: #4065f8;
   --media-matte: #ffffff;
+  --selected: #e2e2e8;
+  --on-selected: #010102;
 }
 
 html[data-mode="dark"] {
@@ -52,4 +57,6 @@ html[data-mode="dark"] {
   --focus-ring: #a1d0f6;
   --media-matte: #000000;
   --surface-muted: #2a2a2e;
+  --selected: #3a3a40;
+  --on-selected: #fcfcff;
 }

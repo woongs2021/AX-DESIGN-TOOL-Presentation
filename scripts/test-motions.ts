@@ -92,8 +92,12 @@ for (const preset of MOTION_PRESETS) {
     if (param.type === "range") assert.ok(param.min <= param.default && param.default <= param.max, `${preset.id}.${param.id} default in range`);
     if (param.type === "select") assert.ok(param.options.some((option) => option.value === param.default), `${preset.id}.${param.id} default option`);
   }
-  assert.ok(motionGroups(preset)[0]?.params.some((param) => param.label.startsWith("세기 · ")), `${preset.id} has 세기`);
-  assert.equal(motionGroups(preset)[0]?.params.some((param) => param.id === "hold"), preset.timing === "intro", `${preset.id} 유지 only for intro`);
+  const common = motionGroups(preset).find((group) => group.title === "공통");
+  assert.ok(common?.params.some((param) => param.label.startsWith("세기 · ")), `${preset.id} has 세기`);
+  assert.equal(common?.params.some((param) => param.id === "hold"), preset.timing === "intro", `${preset.id} 유지 only for intro`);
+  if (preset.kind === "typography") {
+    assert.deepEqual(motionGroups(preset)[0]?.params.map((param) => param.id), ["spacing", "lineHeight"], `${preset.id} shows 자간·행간 first`);
+  }
 }
 const lens = findMotionPreset("typo-eye-lens")!;
 assert.equal(defaultMotionValues(lens, "dark").color, "#FCFCFF");
@@ -163,7 +167,7 @@ assert.ok(spaced.box.w > kit.layout("AX grows", { ...options, size: 100 }, measu
 
 /* ---------- timing ---------- */
 const blur = findMotionPreset("typo-progressive-blur")!;
-const blurValues = defaultMotionValues(blur);
+const blurValues = { ...defaultMotionValues(blur), speed: 1 };
 const layout = kit.layout(MOTION_DEFAULT_TEXT, options, measure);
 const input = { values: blurValues, text: layout, images: [], count: 0 };
 const normal = kit.timeline(blur, blurValues, input);
@@ -267,6 +271,50 @@ assert.deepEqual(motionStrong(MOTION_DEFAULT_TEXT, null), [1], "saved 강조 단
 setMotionDefaults({ values: {} });
 assert.deepEqual(changedMotionValues({ a: 1, b: "x", c: true }, { a: 1, b: "y", c: true }), { b: "x" });
 
+/* ---------- motions on Presentation layers ---------- */
+const { parseLayerMotion } = await import("../src/shared/studio.ts");
+const { imageSquare, layerMotionChanges, layerMotionParams, layerMotionStart, layerMotionValues, textLayout, textSquare } = await import("../src/motions/layer.ts");
+assert.deepEqual(parseLayerMotion({ motion: { preset: "typo-wave", values: { speed: 2, loop: false, bad: { x: 1 }, nan: Number.NaN } } }), {
+  motion: { preset: "typo-wave", values: { speed: 2, loop: false } },
+});
+assert.deepEqual(parseLayerMotion({ motion: { preset: "../x" } }), {}, "a broken preset id is dropped");
+assert.deepEqual(parseLayerMotion({}), {});
+const square = textSquare({ x: 100, y: 200, w: 800, h: 150 }, 120);
+assert.equal(square.side, 800 + 72 * 2, "text gets room around it");
+assert.equal(square.x + square.side / 2, 500, "centered on the block");
+const picture = imageSquare({ x: 0, y: 0, w: 600, h: 400 }, 60);
+assert.equal(picture.side, 1000, "the preset's card (60 % of the square) is the layer's box");
+const flat = (text: string) => Array.from(text).length * 50;
+const placed = textLayout([{ text: "AX gives", x: 200, y: 300 }, { text: "people", x: 220, y: 420 }], 100, 120, 80, flat, { x: 0, y: 0, side: 2160 });
+assert.equal(placed.size, 50, "sizes are in the square's 1080 units");
+assert.equal(placed.chars.length, 13);
+assert.equal(placed.chars[0]?.x, 100);
+assert.equal(placed.chars[0]?.y, (300 + 80) / 2, "letters sit on the editor's baseline");
+assert.equal(placed.chars[2]?.x, (200 + flat("AX ")) / 2, "a letter is measured from its line's start");
+assert.deepEqual([...new Set(placed.chars.map((c) => c.word))], [0, 1, 2]);
+assert.equal(placed.steps, 7 + 6 + 2, "letters plus one step per gap between words");
+assert.equal(placed.lines.length, 2);
+const waveLayer = findMotionPreset("typo-wave")!;
+assert.deepEqual(layerMotionParams(waveLayer).map((param) => param.id).sort(), ["amp", "appear", "loop", "period", "pulse", "speed", "tilt", "wavelength"].sort(), "a text layer shows 공통 and 이 효과 only");
+assert.ok(layerMotionParams(findMotionPreset("img-card-fan")!).some((param) => param.id === "shadow"), "a picture can still set its card shadow");
+assert.equal(layerMotionStart(findMotionPreset("img-card-fan")!).shadow, 0, "a picture starts without a card shadow, like its still");
+const run1 = layerMotionValues(waveLayer, { speed: 2, amp: 9999 }, { font: '"Pretendard Variable", sans-serif', color: "#123456" });
+assert.equal(run1.speed, 2);
+assert.equal(run1.amp, 160, "stored values are kept in range");
+assert.equal(run1.background, "transparent", "a layer motion has no background");
+assert.equal(run1.color, "#123456", "the layer sets its own color");
+assert.deepEqual(layerMotionChanges(waveLayer, { ...layerMotionStart(waveLayer), speed: 1.5 }), { speed: 1.5 }, "a layer stores what it changed");
+assert.equal(kit.font({ font: '"Pretendard Variable", sans-serif', weight: 700, italic: true }, 50), 'italic 700 50px "Pretendard Variable", sans-serif', "a layer's own font stack");
+const given = k_prepare(waveLayer, run1, placed);
+assert.equal(given.layout, placed, "a given layout is used as it is");
+function k_prepare(preset: MotionPreset, values: Record<string, number | string | boolean>, layout: MotionLayout) {
+  return kit.prepare(preset, values, "AX gives people", [], [], layout);
+}
+const { motionDeckScript } = await import("../src/motions/code-export.ts");
+const deckScript = motionDeckScript([{ preset: waveLayer, values: run1, layout: placed, image: null }, { preset: findMotionPreset("img-spin-360")!, values: defaultMotionValues(findMotionPreset("img-spin-360")!), layout: null, image: "data:image/png;base64,AAAA" }]);
+assert.doesNotThrow(() => new Function(deckScript), "the export's motion player parses");
+assert.ok(!deckScript.includes("</script"), "and cannot close its script");
+
 /* ---------- pasted motion files ---------- */
 const named = motionFileName("typo-shine", new Date(2026, 10, 26, 9, 5, 7), "webm");
 assert.equal(named, "motion-typo-shine-20261126-090507.webm");
@@ -281,10 +329,14 @@ assert.equal(posterUrlFor("presentation-media/p/page/motion-x.mp4?v=2"), "presen
 assert.equal(posterUrlFor("presentation-media/p/page/clip.mp4"), null, "other videos keep their first frame");
 assert.equal(posterUrlFor("blob:http://localhost/123"), null);
 
-/* ---------- typography examples: 강조 단어 bold, the rest thin ---------- */
+/* ---------- typography examples: 강조 단어 bold, the rest lighter ---------- */
+const blurStart = defaultMotionValues(findMotionPreset("typo-progressive-blur")!);
+assert.deepEqual([blurStart.speed, blurStart.blur, blurStart.weight], [0.65, 31, 600], "progressive blur starts from the values set on 2026-11-28");
+assert.equal(defaultMotionValues(findMotionPreset("typo-shine")!).weight, 500);
+assert.equal(defaultMotionValues(findMotionPreset("typo-wave")!).spacing, 0.09);
 for (const preset of motionPresetsOf("typography")) {
   const values = defaultMotionValues(preset);
-  assert.ok(Number(values.weight) <= 300 && Number(values.strongWeight) >= 700, `${preset.id} thin words and bold 강조 단어: ${values.weight}/${values.strongWeight}`);
+  assert.ok(Number(values.strongWeight) >= 700 && Number(values.strongWeight) - Number(values.weight) >= 200, `${preset.id} 강조 단어 clearly bolder: ${values.weight}/${values.strongWeight}`);
 }
 assert.ok(new Set(motionPresetsOf("typography").map((preset) => defaultMotionValues(preset).font)).size >= 2, "more than one typeface");
 
@@ -347,4 +399,4 @@ for (const preset of MOTION_PRESETS) {
   assert.deepEqual(parseHash(hrefFor({ name: "motions", kind: preset.kind, preset: preset.id })), { name: "motions", kind: preset.kind, preset: preset.id });
 }
 
-console.log("OK: motion presets, schema, values, sentence and 강조 단어, layout, timing, randomness, drawing, code copy, saved defaults, pasted names, store, and addresses");
+console.log("OK: motion presets, schema, values, sentence and 강조 단어, layout, timing, randomness, drawing, code copy, saved defaults, layer motions, pasted names, store, and addresses");

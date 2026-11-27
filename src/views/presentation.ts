@@ -12,10 +12,13 @@ import {
   renderStudio,
   renderStudioScene,
   renderStudioStill,
+  settleLayerMotions,
   studioImagesReady,
   type StudioConfig,
+  type StudioSource,
 } from "./studio.ts";
 import type { ConferenceIndex } from "../shared/conference.ts";
+import { assetUrl } from "../lib/dom.ts";
 import { scenesHtml } from "../shared/scene-html.ts";
 import { scenesPdf } from "../shared/scene-pdf.ts";
 import { slidesPptx, type SlideScene } from "../shared/slides-pptx.ts";
@@ -296,6 +299,14 @@ function bindSampleHeight(root: HTMLElement): void {
   });
 }
 
+/**
+ * Pictures the page templates use (유형 3: page 7's workflow), served from public/assets/presentation so they show in
+ * every project, the type samples, and the built site. Not listed in any panel.
+ */
+const TEMPLATE_SOURCES: StudioSource[] = [
+  { src: "tpl:type3", url: assetUrl("assets/presentation/type3-workflow.png"), thumb: assetUrl("assets/presentation/type3-workflow.png"), label: "유형 3 워크플로우", kind: "theme" },
+];
+
 export function presentationStudioConfig(index: ConferenceIndex, historyKey: string, pageId = "", project = ""): StudioConfig {
   const base = conferenceStudioConfig(index);
   const slide = base.presets.find((item) => item.id === "conf-slide") ?? base.presets[0];
@@ -307,6 +318,7 @@ export function presentationStudioConfig(index: ConferenceIndex, historyKey: str
     presets: slide ? [slide] : base.presets,
     groups: [
       ...base.groups.map((group) => ({ ...group, hidden: true })),
+      { id: "template", label: "유형", items: TEMPLATE_SOURCES, hidden: true },
       { id: "page", label: "이 페이지", items: [] },
     ],
     conference: index,
@@ -1729,7 +1741,17 @@ function startThumbMirror(): void {
         live.width = width;
         live.height = height;
       }
-      live.getContext("2d")?.drawImage(source, 0, 0, width, height);
+      const ctx = live.getContext("2d");
+      ctx?.drawImage(source, 0, 0, width, height);
+      // A layer whose motion is playing is not on the editor canvas; its motion is drawn on top, where it plays.
+      const unit = width / source.width;
+      document.querySelectorAll<HTMLCanvasElement>(".studio__layer-motion canvas").forEach((motion) => {
+        if (!ctx || motion.width < 2) return;
+        const side = parseFloat(motion.style.width) * unit;
+        ctx.globalAlpha = Number(motion.style.opacity || 1);
+        ctx.drawImage(motion, parseFloat(motion.style.left) * unit, parseFloat(motion.style.top) * unit, side, side);
+        ctx.globalAlpha = 1;
+      });
     }
     requestAnimationFrame(tick);
   };
@@ -1758,6 +1780,8 @@ function paintMissingThumbs(root: HTMLElement, deck: PresentationDeck, index: Co
 }
 
 function snapshotThumb(): string {
+  // A layer under a playing motion is not on the canvas; paint the stills back first.
+  settleLayerMotions();
   const canvas = document.querySelector<HTMLCanvasElement>("#studio-canvas");
   if (!canvas || canvas.width < 2 || canvas.height < 2) return "";
   const thumb = document.createElement("canvas");

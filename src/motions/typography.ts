@@ -11,8 +11,8 @@ const progressiveBlur: MotionPreset = {
   summary: "글자가 차례로 흐림 속에서 떠오르며 선명해진다",
   timing: "intro",
   posterAt: 0.55,
-  defaults: { font: "pretendard", weight: 200, strongWeight: 800 },
-  strength: rangeParam("blur", "시작 블러", 0, 60, 1, 20, "%"),
+  defaults: { font: "pretendard", weight: 600, strongWeight: 800, speed: 0.65 },
+  strength: rangeParam("blur", "시작 블러", 0, 60, 1, 31, "%"),
   params: [
     selectParam("unit", "단위", [["char", "글자"], ["word", "단어"], ["line", "줄"]], "char"),
     rangeParam("stagger", "글자 간격", 5, 200, 0.5, 16.5, "ms"),
@@ -128,7 +128,7 @@ const shine: MotionPreset = {
   summary: "비스듬한 빛줄기가 글자 표면을 쓸고 지나가며 반짝인다",
   timing: "cycle",
   posterAt: 0.36,
-  defaults: { font: "pretendard", weight: 200, strongWeight: 800 },
+  defaults: { font: "pretendard", weight: 500, strongWeight: 800 },
   strength: rangeParam("glow", "빛 밝기", 0, 100, 1, 80),
   params: [
     rangeParam("width", "빛 폭", 2, 60, 1, 16, "%"),
@@ -385,7 +385,7 @@ const wave: MotionPreset = {
   summary: "글자들이 물결처럼 오르내린다",
   timing: "cycle",
   posterAt: 0.62,
-  defaults: { font: "pretendard", weight: 200, strongWeight: 800 },
+  defaults: { font: "pretendard", weight: 200, strongWeight: 800, spacing: 0.09 },
   strength: rangeParam("amp", "진폭", 0, 160, 1, 40, "px"),
   params: [
     rangeParam("wavelength", "파장", 2, 30, 1, 9, "글자"),
