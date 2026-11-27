@@ -12,6 +12,20 @@ export type ScenePathCmd =
   | { op: "C"; c1x: number; c1y: number; c2x: number; c2y: number; x: number; y: number }
   | { op: "Z" };
 export type SceneGeometry = { type: "rect"; radius: number } | { type: "ellipse" } | { type: "path"; commands: ScenePathCmd[] };
+/**
+ * A Motions preset playing in place of a text or picture item in the HTML export (PDF and PowerPoint keep the item).
+ * square: card pixels; the motion draws its 1080 square there. layout: the text's letters (Motions' MotionLayout).
+ * image: the picture's still (PNG). face: the font the letters need, so the export embeds their glyphs.
+ */
+export type SceneMotion = {
+  preset: string;
+  values: Record<string, number | string | boolean>;
+  square: { x: number; y: number; side: number };
+  opacity: number;
+  layout?: unknown;
+  image?: Uint8Array;
+  face?: { font: string; weight: number; italic: boolean; text: string };
+};
 /** Card pixels. Items are bottom to top. */
 export type SceneItem =
   | {
@@ -39,6 +53,7 @@ export type SceneItem =
       enter?: "once" | "loop";
       /** Layers that share this key blur in together. */
       enterGroup?: string;
+      motion?: SceneMotion;
     }
   | {
       kind: "shape";
@@ -89,6 +104,7 @@ export type SceneItem =
       enter?: "once" | "loop";
       /** Layers that share this key blur in together. */
       enterGroup?: string;
+      motion?: SceneMotion;
     };
 /** Card pixels. box is what shows; full is the whole frame, larger than box when the layer is cropped. */
 export type SceneVideo = {

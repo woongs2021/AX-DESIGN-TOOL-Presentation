@@ -4,8 +4,10 @@
  */
 
 import blurSource from "../../presentation/progressive-blur.js?raw";
+import { findMotionPreset } from "../motions/index.ts";
+import { motionDeckScript, type DeckMotion } from "../motions/code-export.ts";
 import { faceCovers, loadFace, subsetTrueType, type LoadedFace } from "./font-files.ts";
-import type { SceneColor, SceneFill, SceneItem, SceneVideo, SlideScene } from "./slides-pptx.ts";
+import type { SceneColor, SceneFill, SceneItem, SceneMotion, SceneVideo, SlideScene } from "./slides-pptx.ts";
 
 const num = (value: number) => String(Math.round(value * 100) / 100);
 const paint = (color: SceneColor) => `#${color.hex}`;
@@ -108,6 +110,13 @@ function videoLayerHtml(video: SceneVideo, id: string, width: number, height: nu
     .join(";");
   const loop = video.play === "once" ? "" : " loop";
   return `<div class="media-stage" data-w="${width}" style="width:${width}px;height:${height}px"><div${mark}><video data-video="${id}"${loop} playsinline preload="auto" style="${style}"></video></div></div>`;
+}
+
+/** A layer's motion: a canvas over the motion's square, in a stage scaled like the video layers'. */
+function motionLayerHtml(motion: SceneMotion, index: number, width: number, height: number): string {
+  const { x, y, side } = motion.square;
+  const opacity = motion.opacity < 1 ? `;opacity:${num(motion.opacity)}` : "";
+  return `<div class="media-stage" data-w="${width}" style="width:${width}px;height:${height}px"><canvas data-motion="${index}" style="position:absolute;left:${num(x)}px;top:${num(y)}px;width:${num(side)}px;height:${num(side)}px${opacity}"></canvas></div>`;
 }
 
 const PLAYER_CSS = `
@@ -245,6 +254,12 @@ const show = (next) => {
   });
   count.textContent = (next + 1) + " / " + slides.length;
   playBlur(slides[next]);
+  if (window.axMotions) {
+    slides.forEach((slide, at) => {
+      if (at !== next) window.axMotions.stop(slide);
+    });
+    window.axMotions.start(slides[next]);
+  }
   try { history.replaceState(null, "", "#" + (next + 1)); } catch (e) {}
   setTimeout(() => prepare(slides[next + 1]), 300);
 };
@@ -286,6 +301,7 @@ export async function scenesHtml(scenes: readonly SlideScene[], title: string): 
     entry.gids.add(face.font.glyph(codePoint));
   };
   const videos = new Map<string, string>();
+  const motions: DeckMotion[] = [];
   const slides: string[] = [];
   let gradient = 0;
   const videoId = (url: string) => {
@@ -304,6 +320,26 @@ export async function scenesHtml(scenes: readonly SlideScene[], title: string): 
     const enterTexts: string[] = [];
     const entered = (item: SceneItem) => enterMark(item, "object");
     for (const item of scene.items) {
+      const motion = item.kind === "text" || item.kind === "picture" ? item.motion : undefined;
+      const preset = motion ? findMotionPreset(motion.preset) : undefined;
+      if (motion && preset) {
+        const values = { ...motion.values };
+        if (motion.face) {
+          // The letters draw in the embedded faces. A face is already its weight, so the canvas asks for the plain one.
+          const primary = await loadFace(motion.face.font, motion.face.weight, motion.face.italic);
+          const fallback = await loadFace("Pretendard", motion.face.weight, motion.face.italic);
+          for (const point of Array.from(`${motion.face.text}Hg`)) {
+            const codePoint = point.codePointAt(0) ?? 32;
+            use(faceCovers(primary.font, codePoint) ? primary : fallback, codePoint);
+          }
+          Object.assign(values, { font: `"${family(primary)}", "${family(fallback)}"`, weight: 400, strongWeight: 400 });
+        }
+        motions.push({ preset, values, layout: motion.layout ?? null, image: motion.image ? dataUrl("image/png", motion.image) : null });
+        layers.push({ svg: body });
+        body = [];
+        layers.push({ html: motionLayerHtml(motion, motions.length - 1, scene.width, scene.height) });
+        continue;
+      }
       if (item.kind === "picture" && item.video) {
         layers.push({ svg: body });
         body = [];
@@ -413,6 +449,7 @@ ${slides.join("\n")}
     parts.push("</script>\n");
   }
   const inline = blurSource.replace(/<\/(script)/gi, "<\\/$1");
-  parts.push(`<script>${inline}</script>\n<script>${PLAYER_JS}</script>\n</body>\n</html>\n`);
+  const motionScript = motions.length > 0 ? `<script>${motionDeckScript(motions).replace(/<\/(script)/gi, "<\\/$1")}</script>\n` : "";
+  parts.push(`<script>${inline}</script>\n${motionScript}<script>${PLAYER_JS}</script>\n</body>\n</html>\n`);
   return new Blob(parts, { type: "text/html" });
 }

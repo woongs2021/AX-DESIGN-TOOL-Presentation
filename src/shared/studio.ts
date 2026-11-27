@@ -38,6 +38,30 @@ export type StudioRect = { x: number; y: number; w: number; h: number };
 export type TextKind = "title" | "body";
 export type TextAlign = "left" | "center" | "right";
 export const TEXT_ALIGNS: readonly TextAlign[] = ["left", "center", "right"];
+/**
+ * A Motions preset played on a text or image layer in place of its still: in the editor, in presentation mode, and in
+ * the HTML export (PDF, PPTX, and PNG keep the still). values: what differs from the preset's own values.
+ */
+export type LayerMotion = { preset: string; values: Record<string, number | string | boolean> };
+
+/** A stored layer motion, checked: a preset id and plain values. Whether the preset fits the layer is checked where it plays. */
+export function parseLayerMotion(raw: unknown): { motion?: LayerMotion } {
+  const motion = raw && typeof raw === "object" ? (raw as { motion?: unknown }).motion : null;
+  if (!motion || typeof motion !== "object") return {};
+  const { preset, values } = motion as { preset?: unknown; values?: unknown };
+  if (typeof preset !== "string" || !/^(typo|img)-[a-z0-9-]{1,48}$/.test(preset)) return {};
+  const plain =
+    values && typeof values === "object" && !Array.isArray(values)
+      ? Object.fromEntries(
+          Object.entries(values as Record<string, unknown>).filter(
+            (entry): entry is [string, number | string | boolean] =>
+              typeof entry[1] === "string" || typeof entry[1] === "boolean" || (typeof entry[1] === "number" && Number.isFinite(entry[1])),
+          ),
+        )
+      : {};
+  return { motion: { preset, values: plain } };
+}
+
 export type TextLayer = {
   id: string;
   kind: TextKind;
@@ -61,6 +85,8 @@ export type TextLayer = {
   shadow?: ShapeShadow;
   /** Progressive-blur entrance. once plays one pass. loop repeats while the page stays open. */
   enter?: LayerEnter;
+  /** A typography motion played on this text. */
+  motion?: LayerMotion;
 };
 /** x/y/width describe the cropped part on the card. */
 export type ImageLayer = {
@@ -98,6 +124,8 @@ export type ImageLayer = {
   play?: MediaPlay;
   /** Progressive-blur entrance. once plays one pass. loop repeats while the page stays open. */
   enter?: LayerEnter;
+  /** An image motion played on this picture. */
+  motion?: LayerMotion;
 };
 export type StudioLayer = TextLayer | ImageLayer | ShapeLayer | LineLayer | PenLayer;
 export type LayerKind = StudioLayer["kind"];
@@ -605,6 +633,7 @@ function parseLayer(raw: unknown, ink: string, theme: string): StudioLayer | nul
       ...tune(value.hue, IMAGE_HUE_LIMIT, "hue"),
       ...(isMotionSrc(src) ? parseMediaPlay(value) : {}),
       ...parseLayerEnter(value),
+      ...(isMotionSrc(src) ? {} : parseLayerMotion(value)),
     };
   }
   if (value.kind !== "title" && value.kind !== "body") return null;
@@ -622,6 +651,7 @@ function parseLayer(raw: unknown, ink: string, theme: string): StudioLayer | nul
     ...(value.shadow && typeof value.shadow === "object" ? { shadow: parseShadow(value.shadow) } : {}),
     ...textStyle(value, value.kind),
     ...parseLayerEnter(value),
+    ...parseLayerMotion(value),
   };
 }
 

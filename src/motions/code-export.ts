@@ -113,3 +113,80 @@ export function motionCode(preset: MotionPreset, values: MotionValues, text: str
     "",
   ].join("\n");
 }
+
+/** One motion in an exported deck: the preset's id, its values, and the letters or the still (a data URL). */
+export type DeckMotion = { preset: MotionPreset; values: MotionValues; layout: unknown; image: string | null };
+
+/**
+ * The HTML export's motion player: the kit, the presets the deck uses, and every motion, each drawn on its own
+ * canvas[data-motion] while its slide shows. window.axMotions.start(slide) plays a slide's motions from the start,
+ * stop(slide) stops them. A pass that does not loop holds its last frame.
+ */
+export function motionDeckScript(motions: readonly DeckMotion[]): string {
+  const presets = [...new Map(motions.map((motion) => [motion.preset.id, motion.preset])).values()];
+  const defs = motions.map((motion) => ({ preset: motion.preset.id, values: motion.values, layout: motion.layout, image: motion.image }));
+  return `(() => {
+"use strict";
+const __name = (target) => target;
+const kit = ${kitSource()};
+const presets = {
+${presets.map((preset) => `${json(preset.id)}: ${presetSource(preset)}`).join(",\n")}
+};
+const defs = ${json(defs)};
+const ready = new Map();
+const playing = new Map();
+const load = (def) => {
+  if (!ready.has(def)) {
+    const picture = def.image
+      ? new Promise((resolve) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => resolve(null);
+          image.src = def.image;
+        })
+      : Promise.resolve(null);
+    const font = def.layout && document.fonts ? document.fonts.load(kit.font(def.values, 100), "Hg").catch(() => null) : Promise.resolve(null);
+    ready.set(def, Promise.all([picture, font]).then(([image]) => kit.prepare(presets[def.preset], def.values, "", image ? [image] : [], [], def.layout || null)));
+  }
+  return ready.get(def);
+};
+const stopCanvas = (canvas) => {
+  cancelAnimationFrame(playing.get(canvas) || 0);
+  playing.delete(canvas);
+};
+window.axMotions = {
+  start(slide) {
+    slide.querySelectorAll("canvas[data-motion]").forEach((canvas) => {
+      stopCanvas(canvas);
+      const def = defs[Number(canvas.dataset.motion)];
+      const preset = def && presets[def.preset];
+      const ctx = canvas.getContext("2d");
+      if (!preset || !ctx) return;
+      const token = {};
+      playing.set(canvas, 0);
+      canvas.motionToken = token;
+      load(def).then((prepared) => {
+        if (canvas.motionToken !== token || !playing.has(canvas)) return;
+        const side = Math.max(64, Math.min(1600, Math.round(canvas.getBoundingClientRect().width * (window.devicePixelRatio || 1))));
+        canvas.width = side;
+        canvas.height = side;
+        const surfaces = new Map();
+        const total = Math.max(0.001, prepared.timeline.total);
+        const loop = def.values.loop !== false;
+        const start = performance.now();
+        const tick = (now) => {
+          if (canvas.motionToken !== token || !playing.has(canvas)) return;
+          const t = (now - start) / 1000;
+          kit.renderFrame(ctx, preset, def.values, prepared, loop ? t % total : Math.min(t, total), surfaces);
+          if (loop || t < total) playing.set(canvas, requestAnimationFrame(tick));
+        };
+        playing.set(canvas, requestAnimationFrame(tick));
+      });
+    });
+  },
+  stop(slide) {
+    slide.querySelectorAll("canvas[data-motion]").forEach(stopCanvas);
+  },
+};
+})();`;
+}

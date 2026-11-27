@@ -132,12 +132,15 @@ export const TYPO_PARAMS: readonly MotionParam[] = [
   toggleParam("autoSize", "크기 자동", true),
   rangeParam("fontSize", "크기", 40, 320, 1, 120, "px", { id: "autoSize", is: false }),
   selectParam("align", "정렬", [["left", "왼쪽"], ["center", "가운데"], ["right", "오른쪽"]], "center"),
-  rangeParam("spacing", "자간", -0.1, 0.4, 0.01, 0, "em"),
-  rangeParam("lineHeight", "행간", 0.8, 1.8, 0.05, 1.1),
   colorParam("color", "글자색", "#FCFCFF"),
   rangeParam("padding", "여백", 0, 25, 1, 10, "%"),
 ];
 
+/** 자간·행간: shown first, right under the sentence. */
+export const TYPO_SPACING_PARAMS: readonly MotionParam[] = [
+  rangeParam("spacing", "자간", -0.1, 0.4, 0.01, 0, "em"),
+  rangeParam("lineHeight", "행간", 0.8, 1.8, 0.05, 1.1),
+];
 export const IMAGE_PARAMS: readonly MotionParam[] = [
   rangeParam("imageSize", "이미지 크기", 30, 100, 1, 72, "%"),
   selectParam("ratio", "비율", [["original", "원본"], ["1:1", "1:1"], ["4:5", "4:5"], ["3:4", "3:4"], ["16:9", "16:9"]], "original"),
@@ -156,13 +159,14 @@ function withDefault<T extends MotionParam>(param: T, defaults: MotionValues | u
   return value === undefined ? param : { ...param, default: value } as T;
 }
 
-/** The controller panel: 공통, 글자 or 이미지, 이 효과, 배경. 세기 shows what it moves. */
+/** The controller panel: (typography) 자간·행간, 공통, 글자 or 이미지, 이 효과, 배경. 세기 shows what it moves. */
 export function motionGroups(preset: MotionPreset): MotionGroup[] {
   const own = (list: readonly MotionParam[]) => list.map((param) => withDefault(param, preset.defaults));
   const strength = { ...withDefault(preset.strength, preset.defaults), label: `세기 · ${preset.strength.label}` };
   const common: MotionParam[] = [withDefault(SPEED, preset.defaults), strength, withDefault(LOOP, preset.defaults)];
   if (preset.timing === "intro") common.push(withDefault(HOLD, preset.defaults));
   return [
+    ...(preset.kind === "typography" ? [{ title: "자간·행간", params: own(TYPO_SPACING_PARAMS) }] : []),
     { title: "공통", params: common },
     { title: preset.kind === "typography" ? "글자" : "이미지", params: own(preset.kind === "typography" ? TYPO_PARAMS : IMAGE_PARAMS) },
     { title: "이 효과", params: own(preset.params) },
@@ -218,8 +222,13 @@ function snap(value: number, param: RangeParam): number {
 }
 
 /** Stored values, checked against the schema: a missing or broken value takes its default, a number is kept in range. */
-export function normalizeMotionValues(preset: MotionPreset, raw: unknown, mode: "light" | "dark" = "dark"): MotionValues {
-  const values = defaultMotionValues(preset, mode);
+export function normalizeMotionValues(
+  preset: MotionPreset,
+  raw: unknown,
+  mode: "light" | "dark" = "dark",
+  base: MotionValues = defaultMotionValues(preset, mode),
+): MotionValues {
+  const values = { ...base };
   if (!raw || typeof raw !== "object") return values;
   const stored = raw as Record<string, unknown>;
   for (const param of motionParams(preset)) {
