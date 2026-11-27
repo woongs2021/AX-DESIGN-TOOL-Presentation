@@ -2198,7 +2198,7 @@ html[data-mode="light"] .studio__dual-track {
 
 .studio__color-picker--text {
   box-sizing: border-box;
-  border: 1.5px solid color-mix(in srgb, var(--fg) 30%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--fg) 27%, transparent);
 }
 
 .studio__palette {
@@ -2213,7 +2213,7 @@ html[data-mode="light"] .studio__dual-track {
   width: 22px;
   height: 22px;
   padding: 0;
-  border: 1.5px solid color-mix(in srgb, var(--fg) 30%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--fg) 27%, transparent);
   border-radius: 50%;
   cursor: pointer;
 }
@@ -2348,7 +2348,7 @@ html[data-mode="light"] .studio__radius input[type="range"] {
 .studio__preset-shape {
   display: block;
   box-sizing: border-box;
-  border: 1px solid color-mix(in srgb, var(--fg) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fg) 27%, transparent);
   border-radius: 2px;
   object-fit: cover;
   background: color-mix(in srgb, var(--fg) 22%, transparent);

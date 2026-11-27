@@ -8,6 +8,7 @@
  * --on-* tokens are mode-independent ink for colored surfaces.
  * --selected / --on-selected: the neutral gray of a selected chip, tab, or toggle, per mode.
  * --neutral: a mid gray for quiet icons, readable on both modes.
+ * --stroke: every UI line derives from it; 0.648 is 90% of the earlier 0.72 (lines 10% lighter, 2026-11-28).
  * Soft/tint surfaces must never inherit --fg for body text.
  *
  * Accessibility note: design-system muted/stroke alphas of 0.6/0.4 fail
@@ -42,7 +43,7 @@ html[data-mode="light"],
   --bg: #fcfcff;
   --fg: #010102;
   --fg-muted: rgba(1, 1, 2, 0.82);
-  --stroke: rgba(1, 1, 2, 0.72);
+  --stroke: rgba(1, 1, 2, 0.648);
   --focus-ring: #4065f8;
   --media-matte: #ffffff;
   --selected: #e2e2e8;
@@ -53,7 +54,7 @@ html[data-mode="dark"] {
   --bg: #010102;
   --fg: #fcfcff;
   --fg-muted: rgba(252, 252, 255, 0.72);
-  --stroke: rgba(252, 252, 255, 0.72);
+  --stroke: rgba(252, 252, 255, 0.648);
   --focus-ring: #a1d0f6;
   --media-matte: #000000;
   --surface-muted: #2a2a2e;
